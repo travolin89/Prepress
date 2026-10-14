@@ -14,18 +14,45 @@ The website only delivers the app's code. Files you open are processed on the iP
 
 ## Using it
 - **Open**: pick a PDF from Files, iCloud Drive, or a USB drive.
-- **Moving around**: pinch to zoom, drag to pan, double-tap to fit. Trackpads and mice also work.
-- **Separations**: true plates from Ghostscript, with overprint handled like a RIP. Switch each ink on or off in the Inspector. The first use loads the separation engine.
-- **Densitometer**: turn it on and drag a finger to read ink % and total area coverage (TAC). An Apple Pencil hover or a trackpad pointer reads without touching.
-- **Page boxes**: edit the Crop, Bleed, Trim and Art boxes in mm, or set the bleed to N mm around the trim.
-- **Save**: the original file's bytes are kept exactly, and edits are added after them. Before you save, you see every change compared with the file you opened. Then choose **Save to Files**.
-- `test-sample.pdf` is a small PDF/X test file with a PANTONE spot, a varnish plate and private app data.
+- **Modes** (toolbar):
+  - **Pan**: drag to move around.
+  - **Select**: tap an object to select it, drag to move it, and tap the same spot again to pick the object underneath.
+  - **Measure**: drag to read ink percentages.
+- **Moving around**: pinch to zoom in any mode, and double-tap to fit in Pan mode. An Apple Pencil hover or a trackpad pointer reads ink values without touching.
+- **Separations**: true plates from Ghostscript, with overprint handled like a RIP.
+- **Undo**: steps back through your edits since the last save.
+
+### Inspector tabs
+- **Inks**: switch plates on and off. **Measure coverage** gives the ink % and solid-equivalent cm² per plate inside the trim.
+- **Edit**:
+  - For the selected object, nudge it, move it by an exact distance in mm, change its ink (process, an existing spot, or a new spot) and tint, or delete it.
+  - Page boxes, plus a one-tap bleed setting.
+- **Preflight**: checks for missing fonts, low-resolution and RGB images, RGB colour, hairlines and zero-width lines, small text, bleed, trim box, PDF/X marking and output intent, and total ink coverage. The limits are adjustable. Tap a result to jump to it on the page.
+- **Barcode**: EAN-13, UPC-A, EAN-8, GS1-128, Code 128, ITF-14, GS1 DataMatrix, DataMatrix, GS1 QR and QR.
+  - Set the module size, bar height, bar width reduction (BWR), ink and tint.
+  - Place it by typing a position or by tapping the page.
+  - Barcodes are vector artwork with the digits drawn as outlines, so no fonts are needed. Once placed, a barcode can be selected, moved or deleted like any other object.
+- **Info**: PDF/X version, output intent, private application data, layers and page boxes.
+
+### Saving
+The original file's bytes are kept exactly, and edits are added after them. Before you save, you see every change compared with the file you opened. Then choose **Save to Files**.
+
+### Editing limits (for now)
+- Objects inside placed artwork (form XObjects) move and delete as one unit.
+- Images and placed artwork can be moved or deleted, but not recoloured.
+- Paths that also act as clipping paths are locked, because editing them would change other artwork.
+- Preflight doesn't yet check white overprint.
 
 ## The test that matters
 Export real jobs from ArtPro+. Open them here, change a box, save, then open the result in ArtPro+ again to confirm everything is intact.
 
-## Updating later
-Upload the changed files to the same repository. Before uploading, raise the version in `sw.js` (`prepress-v1` → `prepress-v2`) so the iPad picks up the new version.
+## Updating to a new version
+1. Unzip the new version in Files.
+2. In your GitHub repository, tap **Add file → Upload files** and select **all** files from the new folder. Files with the same name are replaced, and new ones are added.
+3. Tap **Commit changes** and wait about a minute.
+4. Open the app while online, close it completely, then open it again. The second launch runs the new version.
+
+Each release raises the cache version in `sw.js`, which is what tells the iPad to fetch the new files.
 
 ## Notes
 - Engines: MuPDF and Ghostscript, compiled to WebAssembly. Both are AGPL, which is fine for personal use.

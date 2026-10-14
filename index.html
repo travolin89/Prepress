@@ -18,22 +18,24 @@
     color-scheme: dark;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
     font: 15px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
     overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
   body { display: grid; grid-template-rows: auto 1fr auto; height: 100%;
     padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px); }
-  header { display: flex; align-items: center; gap: 6px; padding: 8px 10px; background: var(--panel);
+  header { display: flex; align-items: center; gap: 5px; padding: 8px 10px; background: var(--panel);
     border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   header::-webkit-scrollbar { display: none; }
   button, select, .btn { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line);
-    border-radius: 10px; min-height: 40px; padding: 0 14px; white-space: nowrap; cursor: pointer; }
+    border-radius: 10px; min-height: 40px; padding: 0 11px; white-space: nowrap; cursor: pointer; }
   button:active { filter: brightness(1.3); }
   button.on { background: var(--accent); border-color: var(--accent); }
   button:disabled { opacity: .4; }
   .sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; flex: none; }
   .pageinfo { min-width: 64px; text-align: center; color: var(--dim); font-variant-numeric: tabular-nums; }
   .title { font-weight: 600; margin-right: 6px; flex: none; }
+  @media (max-width: 1240px) { .title { display: none; } }
   .dot { display: none; width: 8px; height: 8px; border-radius: 4px; background: var(--warn); margin-left: 6px; }
   .dirty .dot { display: inline-block; }
   main { position: relative; display: flex; min-height: 0; }
@@ -68,6 +70,35 @@
   .boxhead { color: var(--dim); font-size: 12px; }
   .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
   .row input { width: 70px; min-height: 40px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 0 8px; }
+  .seg { display: inline-flex; flex: none; }
+  .seg button { border-radius: 0; margin-left: -1px; }
+  .seg button:first-child { border-radius: 10px 0 0 10px; margin-left: 0; }
+  .seg button:last-child { border-radius: 0 10px 10px 0; }
+  nav.tabs { display: flex; gap: 4px; margin: -2px 0 12px; position: sticky; top: -12px; background: var(--panel); padding: 4px 0 8px; z-index: 2; }
+  nav.tabs button { flex: 1; padding: 0 6px; min-height: 36px; font-size: 13.5px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .grid2 label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--dim); }
+  .grid2 label.span2 { grid-column: span 2; }
+  .grid2 label.chk { flex-direction: row; align-items: center; color: var(--text); font-size: 14px; }
+  .grid2 input:not([type=checkbox]), .grid2 select, .card input, .card select { min-height: 38px; font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 0 8px; width: 100%; -webkit-user-select: text; user-select: text; }
+  .grid2 input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
+  .card { background: var(--panel2); border-radius: 12px; padding: 10px; margin: 10px 0; }
+  .card .t { font-weight: 600; margin-bottom: 4px; word-break: break-word; }
+  .card .s { color: var(--dim); font-size: 13px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+  .nudge { display: grid; grid-template-columns: repeat(3, 44px); gap: 4px; }
+  .nudge button { padding: 0; }
+  button.danger { background: #4a2326; border-color: #6b2d31; }
+  .issue { display: flex; gap: 10px; padding: 9px 10px; border-radius: 10px; background: var(--panel2); margin-bottom: 6px; cursor: pointer; }
+  .issue .ic { width: 10px; height: 10px; border-radius: 5px; margin-top: 5px; flex: none; }
+  .issue .ic.error { background: var(--bad); } .issue .ic.warn { background: var(--warn); } .issue .ic.info { background: var(--accent); }
+  .issue .d { color: var(--dim); font-size: 12.5px; }
+  .issue.sel { outline: 2px solid var(--accent); }
+  table.cov { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; margin-top: 8px; }
+  table.cov td, table.cov th { padding: 5px 4px; border-bottom: 1px solid var(--line); text-align: right; }
+  table.cov td:first-child, table.cov th:first-child { text-align: left; }
+  .bar { height: 6px; border-radius: 3px; background: var(--line); margin-top: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; }
   footer { display: flex; align-items: center; gap: 14px; padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
     background: var(--panel); border-top: 1px solid var(--line); font-size: 13.5px; font-variant-numeric: tabular-nums;
     min-height: 40px; overflow-x: auto; white-space: nowrap; }
@@ -89,12 +120,13 @@
   <span class="title">Prepress</span>
   <label class="btn" style="display:flex;align-items:center">Open<input id="file" type="file" accept=".pdf,application/pdf" hidden></label>
   <button id="save" disabled>Save<span class="dot"></span></button>
+  <button id="undo" disabled>Undo</button>
   <span class="sep"></span>
   <button id="prev" disabled>◀</button><span class="pageinfo" id="pageinfo">–</span><button id="next" disabled>▶</button>
   <span class="sep"></span>
   <button id="fit" disabled>Fit</button>
   <button id="seps" disabled title="True separations (Ghostscript)">Separations</button>
-  <button id="dens" disabled title="Drag to read ink values">Densitometer</button>
+  <span class="seg"><button id="mPan" class="on" disabled>Pan</button><button id="mSel" disabled>Select</button><button id="mMeas" disabled>Measure</button></span>
   <button id="boxesBtn" class="on" disabled>Boxes</button>
   <select id="dpi" disabled title="Preview resolution">
     <option value="72">72 dpi</option><option value="100">100 dpi</option><option value="150" selected>150 dpi</option>
@@ -110,12 +142,53 @@
     <div id="empty"><div><h1>Prepress</h1>Open a PDF/X file to start.<br>Everything runs on this iPad; files never leave it.</div></div>
   </div>
   <aside id="aside">
-    <h2>Inks</h2>
-    <div id="inks"><div class="hint">No file open.</div></div>
-    <h2>Page boxes (mm from media corner)</h2>
-    <div id="boxedit"><div class="hint">No file open.</div></div>
-    <h2>Document</h2>
-    <div class="report" id="report">–</div>
+    <nav class="tabs"><button data-tab="inks" class="on">Inks</button><button data-tab="edit">Edit</button><button data-tab="pre">Preflight</button><button data-tab="bc">Barcode</button><button data-tab="info">Info</button></nav>
+    <section id="tab-inks">
+      <div id="inks"><div class="hint">No file open.</div></div>
+      <h2>Ink coverage (this page, inside trim)</h2>
+      <div class="row"><button id="covBtn" disabled>Measure coverage</button></div>
+      <div id="cov"></div>
+    </section>
+    <section id="tab-edit" hidden>
+      <div class="hint">Choose <b>Select</b>, then tap an object. Drag a selected object to move it. Tap the same spot again to pick the object underneath.</div>
+      <div id="selCard"></div>
+      <h2>Page boxes (mm from media corner)</h2>
+      <div id="boxedit"><div class="hint">No file open.</div></div>
+    </section>
+    <section id="tab-pre" hidden>
+      <div class="grid2">
+        <label>Min image ppi<input id="pfPPI" inputmode="decimal" value="250"></label>
+        <label>Min line mm<input id="pfLine" inputmode="decimal" value="0.1"></label>
+        <label>Min text pt<input id="pfText" inputmode="decimal" value="5"></label>
+        <label>Min bleed mm<input id="pfBleed" inputmode="decimal" value="3"></label>
+        <label>Max ink total %<input id="pfTAC" inputmode="decimal" value="300"></label>
+      </div>
+      <div class="row"><button id="pfRun" class="on" disabled>Run preflight</button></div>
+      <div id="pfOut"></div>
+    </section>
+    <section id="tab-bc" hidden>
+      <div class="grid2">
+        <label class="span2">Type<select id="bcType"></select></label>
+        <label class="span2">Data<input id="bcData" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+        <label>Module mm<input id="bcX" inputmode="decimal"></label>
+        <label id="bcHwrap">Bar height mm<input id="bcH" inputmode="decimal"></label>
+        <label>BWR mm<input id="bcBWR" inputmode="decimal" value="0"></label>
+        <label id="bcHRIwrap" class="chk"><input id="bcHRI" type="checkbox" checked> Digits</label>
+        <label>Ink<select id="bcInk"></select></label>
+        <label>Tint %<input id="bcTint" inputmode="decimal" value="100"></label>
+        <label>X mm from trim<input id="bcPosX" inputmode="decimal" value="5"></label>
+        <label>Y mm from trim<input id="bcPosY" inputmode="decimal" value="5"></label>
+      </div>
+      <div id="bcNewInk" class="grid2" hidden>
+        <label class="span2">New spot name<input id="bcInkName" value="Opaque White"></label>
+        <label class="span2">Screen colour (C M Y K %)<input id="bcInkCMYK" value="0 0 0 5"></label>
+      </div>
+      <div class="hint" id="bcInfo"></div>
+      <div class="row"><button id="bcTap" disabled>Place by tap</button><button id="bcAdd" class="on" disabled>Add barcode</button></div>
+    </section>
+    <section id="tab-info" hidden>
+      <div class="report" id="report">–</div>
+    </section>
   </aside>
 </main>
 <footer id="readout"><span class="k">Ready</span></footer>

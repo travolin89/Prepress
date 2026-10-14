@@ -1,7 +1,7 @@
 // Offline cache: after the first visit the whole app works with no internet.
-const CACHE = "prepress-v1";
+const CACHE = "prepress-v2";
 const FILES = [
-  "./", "index.html", "app.js", "pdfcore.js", "tiff.js", "engine-worker.js", "seps-worker.js",
+  "./", "index.html", "app.js", "pdfcore.js", "tiff.js", "content.js", "barcode.js", "preflight.js", "bwip-js.mjs", "bwipp.mjs", "engine-worker.js", "seps-worker.js",
   "mupdf.js", "mupdf-wasm.js", "mupdf-wasm.wasm", "gs.mjs", "gs.js", "browser.js", "gs.wasm",
   "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png",
 ];
