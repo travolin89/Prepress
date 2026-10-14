@@ -24,7 +24,7 @@ The website only delivers the app's code. Files you open are processed on the iP
 
 ### Inspector tabs
 - **Inks**: switch plates on and off. **Measure coverage** gives the ink % and solid-equivalent cm² per plate inside the trim.
-- **Layers**: the file's PDF layers, the same ones ArtPro+ and Acrobat show.
+- **Layers** (also the **Layers** button on the toolbar): the file's PDF layers, the same ones ArtPro+ and Acrobat show.
   - 👁 shows or hides a layer on screen and in the separations. This is a view setting only and is never saved.
   - 🔒 locks a layer so its objects can't be selected or edited.
   - You can also rename layers and add new ones.
@@ -65,10 +65,19 @@ Export real jobs from ArtPro+. Open them here, change a box, save, then open the
 ## Updating to a new version
 1. Unzip the new version in Files.
 2. In your GitHub repository, tap **Add file → Upload files** and select **all** files from the new folder. Files with the same name are replaced, and new ones are added.
-3. Tap **Commit changes** and wait about a minute.
-4. Open the app while online, close it completely, then open it again. The second launch runs the new version.
+3. Tap **Commit changes** and wait about two minutes for GitHub Pages to publish.
+4. Open the app while online. From version 4 on, a new version is picked up on the next launch: the app reloads itself, or offers to if a file is open.
 
-Each release raises the cache version in `sw.js`, which is what tells the iPad to fetch the new files.
+**Checking your version:** the version number is shown at the right end of the toolbar (for example **v4**) and at the top of the Info tab.
+
+### If the app still shows an old version
+Versions 1–3 kept the old copy too stubbornly. If you don't see **v4** after opening the app twice while online:
+1. In Safari, open `https://YOUR-NAME.github.io/prepress/index.html`. In the repository on github.com, open `index.html` and check that it contains "Magnification". If it doesn't, the upload didn't finish, so upload again.
+2. Delete the app from the Home Screen (press and hold the icon → **Remove App → Delete**).
+3. Go to iPad **Settings → Apps → Safari → Advanced → Website Data**, search for **github.io**, and swipe to delete it.
+4. Open the site in Safari again and use **Share → Add to Home Screen**. Fonts you imported earlier need importing once more.
+
+This is only needed once. Version 4 updates itself.
 
 ## Notes
 - Engines: MuPDF and Ghostscript, compiled to WebAssembly. Both are AGPL, which is fine for personal use.

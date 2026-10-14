@@ -9,7 +9,23 @@ const BOX_STYLE = {
 };
 const SVGNS = "http://www.w3.org/2000/svg";
 
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+export const APP_VERSION = "4";
+// Updates: check for a new version on every launch and reload into it
+// (unless a file is open, so unsaved work is never lost).
+if ("serviceWorker" in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register("sw.js").then((r) => r.update()).catch(() => {});
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || reloading) return;
+    if (typeof S !== "undefined" && S.open) {
+      dialog("Update ready", "<p>A new version of the app has been downloaded. Save your work, then reload to use it.</p>", [["Later"], ["Reload now", () => location.reload(), "on"]]);
+      return;
+    }
+    reloading = true;
+    location.reload();
+  });
+}
 
 // ------------------------------------------------------------------ workers
 function rpcWorker(url) {
@@ -152,7 +168,7 @@ $("file").addEventListener("change", async (e) => {
     const info = await call("open", { bytes: buf.buffer }, [buf.buffer]);
     Object.assign(S, { name: f.name, pages: info.pages, page: 0, plates: null, open: true, docInks: info.inks, sels: [], issues: [], highlights: [] });
     S.ver++;
-    $("report").textContent = info.report.join("\n") + (info.incremental ? "" : "\n\n⚠ File needs repair: saves will be full rewrites.");
+    $("report").textContent = `App version ${APP_VERSION}\n\n` + info.report.join("\n") + (info.incremental ? "" : "\n\n⚠ File needs repair: saves will be full rewrites.");
     $("empty").style.display = "none";
     $("pfOut").innerHTML = ""; $("cov").innerHTML = "";
     setEdits(0);
@@ -779,6 +795,8 @@ $("seps").onclick = () => { S.sepsOn = !S.sepsOn; $("seps").classList.toggle("on
 $("boxesBtn").onclick = () => { S.boxesOn = !S.boxesOn; $("boxesBtn").classList.toggle("on", S.boxesOn); drawOverlay(); };
 $("dpi").onchange = () => { S.dpi = +$("dpi").value; render(false); };
 $("panel").onclick = () => { const h = $("aside").classList.toggle("hidden"); $("panel").classList.toggle("on", !h); };
+$("layersBtn").onclick = () => showTab("layers", true);
+$("ver").textContent = "v" + APP_VERSION;
 if (window.innerWidth <= 900) { $("aside").classList.add("hidden"); $("panel").classList.remove("on"); }
 function setMode(m) {
   S.mode = m;
@@ -790,10 +808,10 @@ $("mPan").onclick = () => setMode("pan");
 $("mSel").onclick = () => setMode("select");
 $("mMeas").onclick = () => setMode("measure");
 const TABS = ["inks", "layers", "edit", "text", "pre", "bc", "info"];
-function showTab(name) {
+function showTab(name, force) {
   document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   for (const t of TABS) $("tab-" + t).hidden = t !== name;
-  if ($("aside").classList.contains("hidden") && S.open && name !== "inks") { $("aside").classList.remove("hidden"); $("panel").classList.add("on"); }
+  if ($("aside").classList.contains("hidden") && (force || (S.open && name !== "inks"))) { $("aside").classList.remove("hidden"); $("panel").classList.add("on"); }
 }
 document.querySelectorAll("nav.tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
 
@@ -855,9 +873,19 @@ const toPt = (ip) => { const mb = S.boxes.MediaBox, s = pxPerPt(); return { x: m
 const pts = new Map();
 let pinch = null, lastTap = 0, moved = 0, lastPick = null;
 
+// Outline-only shapes (dielines, keylines) are picked near their lines only,
+// so an outline around the page doesn't swallow taps on the artwork inside.
+const outlineOnly = (o) => o.type === "path" && / stroke /.test(o.desc) && !/ fill /.test(o.desc);
+function hitObject(o, q, tol) {
+  const [x0, y0, x1, y1] = o.bbox;
+  if (q.x < x0 - tol || q.x > x1 + tol || q.y < y0 - tol || q.y > y1 + tol) return false;
+  if (!outlineOnly(o)) return true;
+  const edge = tol * 4;
+  return q.x - x0 < edge || x1 - q.x < edge || q.y - y0 < edge || y1 - q.y < edge;
+}
 function pick(p) {
   const q = toPt(toImg(p)), tol = 3 / pxPerPt() / S.z + 1;
-  const hits = S.objects.filter((o) => selectable(o) && q.x >= o.bbox[0] - tol && q.x <= o.bbox[2] + tol && q.y >= o.bbox[1] - tol && q.y <= o.bbox[3] + tol).map((o) => o.k).reverse();
+  const hits = S.objects.filter((o) => selectable(o) && hitObject(o, q, tol)).map((o) => o.k).reverse();
   if (!hits.length) return -1;
   const again = lastPick && Math.hypot(lastPick.x - p.x, lastPick.y - p.y) < 10 && hits.some((k) => S.sels.includes(k));
   lastPick = p;

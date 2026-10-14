@@ -36,8 +36,9 @@
   .pageinfo { min-width: 64px; text-align: center; color: var(--dim); font-variant-numeric: tabular-nums; }
   .title { font-weight: 600; margin-right: 6px; flex: none; }
   @media (max-width: 1240px) { .title { display: none; } }
-  .dot { display: none; width: 8px; height: 8px; border-radius: 4px; background: var(--warn); margin-left: 6px; }
-  .dirty .dot { display: inline-block; }
+  #save { position: relative; }
+  .dot { display: none; position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 4px; background: var(--warn); }
+  .dirty .dot { display: block; }
   main { position: relative; display: flex; min-height: 0; }
   #stage { position: relative; flex: 1; overflow: hidden; background: var(--stage); touch-action: none; }
   #sheet { position: absolute; left: 0; top: 0; transform-origin: 0 0; box-shadow: 0 4px 24px rgba(0,0,0,.45); }
@@ -141,13 +142,15 @@
     <option value="200">200 dpi</option><option value="300">300 dpi</option><option value="450">450 dpi</option>
   </select>
   <span class="sep"></span>
+  <button id="layersBtn">Layers</button>
   <button id="panel" class="on">Inspector</button>
+  <span id="ver" class="pageinfo" style="min-width:0"></span>
 </header>
 <main>
   <div id="stage">
     <div id="sheet"><canvas id="page" width="1" height="1"></canvas><svg id="boxes"></svg></div>
     <div id="cross"></div>
-    <div id="empty"><div><h1>Prepress</h1>Open a PDF/X file to start.<br>Everything runs on this iPad; files never leave it.</div></div>
+    <div id="empty"><div><h1>Prepress <span style="color:var(--dim);font-weight:400">v4</span></h1>Open a PDF/X file to start.<br>Everything runs on this iPad; files never leave it.</div></div>
   </div>
   <aside id="aside">
     <nav class="tabs"><button data-tab="inks" class="on">Inks</button><button data-tab="layers">Layers</button><button data-tab="edit">Edit</button><button data-tab="text">Text</button><button data-tab="pre">Preflight</button><button data-tab="bc">Barcode</button><button data-tab="info">Info</button></nav>
