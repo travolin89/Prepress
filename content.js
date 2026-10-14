@@ -141,7 +141,9 @@ export function findObjects(ops, ctx) {
   let g = { ctm: IDENT, fill: "Black (Gray 0)", stroke: "Black (Gray 0)", fcs: "DeviceGray", scs: "DeviceGray", font: null, size: 0, Tc: 0, Tw: 0, Th: 1, TL: 0, Ts: 0 };
   const stack = [];
   const objs = [];
-  let pathStart = -1, pathBox = emptyBox(), clip = false;
+  const mc = [];      // open marked-content sequences: {k, tag, prop, dict}
+  const mcEnd = {};   // BDC/BMC op index -> matching EMC op index
+  let pathStart = -1, pathBox = emptyBox(), clip = false, pathMc = null;
   let text = null, Tm = IDENT, Tlm = IDENT;
   const colourLabel = (space, args) => {
     const v = args.filter((a) => a.num !== undefined).map((a) => +a.num.toFixed(3));
@@ -166,6 +168,7 @@ export function findObjects(ops, ctx) {
       }
     }
     const m = mul(Tm, g.ctm);
+    if (!text.tm) { text.tm = m; text.size = g.size; text.font = g.font; }
     rectCorners(m, 0, g.Ts - 0.22 * g.size, adv, g.Ts + 0.8 * g.size, text.box);
     Tm = mul([1, 0, 0, 1, adv, 0], Tm);
   };
@@ -187,10 +190,14 @@ export function findObjects(ops, ctx) {
       case "sc": case "scn": g.fill = colourLabel(g.fcs, a); break;
       case "SC": case "SCN": g.stroke = colourLabel(g.scs, a); break;
       case "W": case "W*": clip = true; break;
-      case "BT": text = { a: k, box: emptyBox(), ctm: g.ctm, fill: null }; Tm = Tlm = IDENT; break;
+      case "BDC": case "BMC": mc.push({ k, tag: a[0]?.name, prop: a[1]?.name ?? null, dict: a[1]?.dict ?? null }); break;
+      case "EMC": { const e = mc.pop(); if (e) mcEnd[e.k] = k; break; }
+      case "BT": text = { a: k, box: emptyBox(), ctm: g.ctm, mc: mc.slice(), tm: null, size: 0, font: null }; Tm = Tlm = IDENT; break;
       case "ET":
         if (text) {
-          objs.push({ type: "text", a: text.a, b: k, ctm: text.ctm, bbox: text.box, desc: `Text · ${g.font || "?"} ${+g.size.toFixed(2)} pt · ${g.fill}` });
+          const sz = text.tm ? text.size * Math.sqrt(Math.abs(text.tm[0] * text.tm[3] - text.tm[1] * text.tm[2])) : g.size;
+          objs.push({ type: "text", a: text.a, b: k, ctm: text.ctm, bbox: text.box, mc: text.mc, tm: text.tm, size: sz, fontRes: text.font ?? g.font,
+            desc: `Text · ${text.font ?? g.font ?? "?"} ${+sz.toFixed(2)} pt · ${g.fill}` });
           text = null;
         }
         break;
@@ -215,13 +222,13 @@ export function findObjects(ops, ctx) {
         if (x && x.kind === "Form") rectCorners(mul(x.matrix, g.ctm), ...x.bbox, bb);
         else rectCorners(g.ctm, 0, 0, 1, 1, bb);
         const label = x && x.kind === "Form" ? (x.barcode ? `Barcode · ${x.barcode}` : `Placed artwork /${name}`) : `Image /${name}`;
-        objs.push({ type: x && x.kind === "Form" ? "form" : "image", a: k, b: k, ctm: g.ctm, bbox: bb, desc: label });
+        objs.push({ type: x && x.kind === "Form" ? "form" : "image", a: k, b: k, ctm: g.ctm, bbox: bb, desc: label, mc: mc.slice(), xname: name, xoc: x ? x.oc : null, barcode: x ? x.meta : null });
         break;
       }
-      case "BI": { const bb = emptyBox(); rectCorners(g.ctm, 0, 0, 1, 1, bb); objs.push({ type: "image", a: k, b: k, ctm: g.ctm, bbox: bb, desc: "Inline image" }); break; }
+      case "BI": { const bb = emptyBox(); rectCorners(g.ctm, 0, 0, 1, 1, bb); objs.push({ type: "image", a: k, b: k, ctm: g.ctm, bbox: bb, desc: "Inline image", mc: mc.slice() }); break; }
       default:
         if (CONSTRUCT.has(o.op)) {
-          if (pathStart < 0) pathStart = k;
+          if (pathStart < 0) { pathStart = k; pathMc = mc.slice(); }
           const v = a.map(num);
           if (o.op === "re") rectCorners(g.ctm, v[0], v[1], v[0] + v[2], v[1] + v[3], pathBox);
           else for (let p = 0; p + 1 < v.length; p += 2) grow(pathBox, tp(g.ctm, v[p], v[p + 1]));
@@ -229,53 +236,156 @@ export function findObjects(ops, ctx) {
           if (pathStart >= 0 && o.op !== "n" && Number.isFinite(pathBox[0])) {
             const filled = !["S", "s"].includes(o.op), stroked = ["S", "s", "B", "B*", "b", "b*"].includes(o.op);
             const parts = [filled ? `fill ${g.fill}` : null, stroked ? `stroke ${g.stroke}` : null].filter(Boolean);
-            objs.push({ type: "path", a: pathStart, b: k, ctm: g.ctm, bbox: pathBox, locked: clip, desc: `Path · ${parts.join(" · ")}${clip ? " · clipping" : ""}` });
+            objs.push({ type: "path", a: pathStart, b: k, ctm: g.ctm, bbox: pathBox, clip, mc: pathMc, desc: `Path · ${parts.join(" · ")}${clip ? " · clipping" : ""}` });
           }
           pathStart = -1; pathBox = emptyBox(); clip = false;
         }
     }
   });
-  return objs.filter((o) => Number.isFinite(o.bbox[0]));
+  const out = objs.filter((o) => Number.isFinite(o.bbox[0]));
+  // our own wrapper: /PPObj <<...>> BDC ... EMC holding exactly one object
+  // (it may also hold that object's own q/cm/Q from earlier edits)
+  const inside = new Map();
+  for (const o of objs) {
+    const top = o.mc && o.mc[o.mc.length - 1];
+    if (top && top.tag === "PPObj") inside.set(top.k, (inside.get(top.k) || 0) + 1);
+  }
+  for (const o of out) {
+    const top = o.mc && o.mc[o.mc.length - 1];
+    o.wrap = top && top.tag === "PPObj" && inside.get(top.k) === 1 && mcEnd[top.k] !== undefined
+      ? { bdc: top.k, emc: mcEnd[top.k], props: plainDict(top.dict) } : null;
+    o.outer = o.wrap ? o.mc.slice(0, -1) : o.mc || [];
+    o.layers = o.outer.filter((e) => e.tag === "OC" && e.prop).map((e) => e.prop);
+  }
+  return out;
+}
+
+// marked-content property dict -> plain JS (numbers, strings as raw bytes, names)
+function plainDict(d) {
+  const out = {};
+  if (!d) return out;
+  for (const [k, v] of Object.entries(d)) out[k] = v.num !== undefined ? v.num : v.str !== undefined ? v.str : v.name !== undefined ? v.name : null;
+  return out;
+}
+export const utf16hex = (t) => { let h = "FEFF"; for (let i = 0; i < t.length; i++) h += t.charCodeAt(i).toString(16).padStart(4, "0"); return `<${h.toUpperCase()}>`; };
+export const fromUtf16 = (raw) => {
+  if (!raw) return "";
+  if (raw.charCodeAt(0) !== 0xfe || raw.charCodeAt(1) !== 0xff) return raw;
+  let t = "";
+  for (let i = 2; i + 1 < raw.length; i += 2) t += String.fromCharCode((raw.charCodeAt(i) << 8) | raw.charCodeAt(i + 1));
+  return t;
+};
+const hexBytes = (t) => "<" + [...t].map((c) => (c.charCodeAt(0) & 255).toString(16).padStart(2, "0")).join("") + ">";
+// serialise props; strings are written as hex so any content is safe
+export function propsToPdf(p) {
+  const parts = [];
+  for (const [k, v] of Object.entries(p)) {
+    if (v === null || v === undefined || v === "") continue;
+    parts.push(`/${k} ${typeof v === "number" ? +v.toFixed(4) : typeof v === "string" && v.startsWith("<") ? v : hexBytes(String(v))}`);
+  }
+  return `<<${parts.join(" ")}>>`;
+}
+export function invert(m) {
+  const [a, b, c, d, e, f] = m, det = a * d - b * c;
+  return [d / det, -b / det, -c / det, a / det, (c * f - d * e) / det, (b * e - a * f) / det];
+}
+
+// state at the end of the stream: is it safe to append page-space content directly?
+export function endIsClean(ops) {
+  let depth = 0, ctm = IDENT, bt = false, mcd = 0;
+  const stack = [];
+  for (const o of ops) {
+    if (o.op === "q") { stack.push(ctm); depth++; }
+    else if (o.op === "Q") { if (stack.length) ctm = stack.pop(); depth--; }
+    else if (o.op === "cm") ctm = mul(o.args.map(num), ctm);
+    else if (o.op === "BT") bt = true; else if (o.op === "ET") bt = false;
+    else if (o.op === "BDC" || o.op === "BMC") mcd++; else if (o.op === "EMC") mcd--;
+  }
+  return depth === 0 && !bt && mcd === 0 && ctm.every((v, i) => Math.abs(v - IDENT[i]) < 1e-9);
 }
 
 // ------------------------------------------------------------------ editing
 const f4 = (v) => +v.toFixed(4);
+const opText = (s, o) => s.slice(o.s, o.e);
 
-// colour: { fillOps, strokeOps } ready-made operator strings
+// edit: { action, ... }. Returns the new content string. Everything outside
+// the edited object is kept byte-for-byte.
 export function editContent(s, ops, objs, edit) {
   const o = objs[edit.obj];
   if (!o) throw new Error("Object not found");
-  if (o.locked) throw new Error("This path is also a clipping path; editing it would change other artwork.");
+  if (o.clip) throw new Error("This path is also a clipping path; editing it would change other artwork.");
   const start = ops[o.a].s, end = ops[o.b].e;
+  // the object plus our wrapper, if it has one
+  const fullS = o.wrap ? ops[o.wrap.bdc].s : start, fullE = o.wrap ? ops[o.wrap.emc].e : end;
   // State set inside the object (legal inside text; common, if non-standard, inside paths)
   // still applies to later artwork, so it is replayed after any q/Q isolation.
   const inner = ops.slice(o.a, o.b + 1);
-  const replay = inner.filter((x) => STATE_OPS.has(x.op)).map((x) => s.slice(x.s, x.e)).join("\n");
+  const replay = inner.filter((x) => STATE_OPS.has(x.op)).map((x) => opText(s, x)).join("\n");
   const tail = replay ? `\n${replay}\n` : "\n";
-  let rep;
-  if (edit.action === "delete") {
-    rep = tail;
-  } else if (edit.action === "move") {
-    const [a, b, c, d] = o.ctm, det = a * d - b * c;
-    if (Math.abs(det) < 1e-12) throw new Error("Object has a degenerate transform");
-    const ux = (edit.dx * d - edit.dy * c) / det, uy = (edit.dy * a - edit.dx * b) / det;
-    rep = `\nq 1 0 0 1 ${f4(ux)} ${f4(uy)} cm\n${s.slice(start, end)}\nQ${tail}`;
-  } else if (edit.action === "recolour") {
-    if (o.type !== "path" && o.type !== "text") throw new Error("Only paths and text can change ink");
-    const keep = (x) => !COLOUR_OPS.has(x.op);
-    if (o.type === "path") {
-      const body = inner.filter(keep).map((x) => s.slice(x.s, x.e)).join("\n");
-      rep = `\nq\n${edit.colour}\n${body}\nQ${tail}`;
-    } else {
-      const body = inner.slice(1, -1).filter(keep).map((x) => s.slice(x.s, x.e)).join("\n");
-      rep = `\nq\nBT\n${edit.colour}\n${body}\nET\nQ${tail}`;
+  const splice = (a, b, rep) => s.slice(0, a) + rep + s.slice(b);
+
+  switch (edit.action) {
+    case "delete":
+      return splice(fullS, fullE, tail);
+    case "move": {
+      const [a, b, c, d] = o.ctm, det = a * d - b * c;
+      if (Math.abs(det) < 1e-12) throw new Error("Object has a degenerate transform");
+      const ux = (edit.dx * d - edit.dy * c) / det, uy = (edit.dy * a - edit.dx * b) / det;
+      return splice(start, end, `\nq 1 0 0 1 ${f4(ux)} ${f4(uy)} cm\n${s.slice(start, end)}\nQ${tail}`);
     }
-  } else throw new Error("Unknown edit " + edit.action);
-  return s.slice(0, start) + rep + s.slice(end);
+    case "recolour": {
+      if (o.type !== "path" && o.type !== "text") throw new Error("Only paths and text can change ink");
+      const keep = (x) => !COLOUR_OPS.has(x.op);
+      if (o.type === "path") return splice(start, end, `\nq\n${edit.colour}\n${inner.filter(keep).map((x) => opText(s, x)).join("\n")}\nQ${tail}`);
+      return splice(start, end, `\nq\nBT\n${edit.colour}\n${inner.slice(1, -1).filter(keep).map((x) => opText(s, x)).join("\n")}\nET\nQ${tail}`);
+    }
+    case "props": {
+      // merge/clear our wrapper properties (group id, lock, text settings)
+      const props = { ...(o.wrap ? o.wrap.props : {}), ...edit.props };
+      for (const k of Object.keys(props)) if (props[k] === null || props[k] === undefined) delete props[k];
+      const empty = Object.keys(props).length === 0;
+      if (o.wrap) {
+        const bdc = ops[o.wrap.bdc], emc = ops[o.wrap.emc];
+        const head = empty ? "" : `/PPObj ${propsToPdf(props)} BDC`;
+        return s.slice(0, bdc.s) + head + s.slice(bdc.e, emc.s) + (empty ? "" : "EMC") + s.slice(emc.e);
+      }
+      if (empty) return s;
+      return splice(start, end, `/PPObj ${propsToPdf(props)} BDC\n${s.slice(start, end)}\nEMC`);
+    }
+    case "layer": {
+      // close enclosing sequences down to (and including) the outermost layer,
+      // put the object in the new layer (keeping its other tags), then reopen
+      const outer = o.outer;
+      const j = outer.findIndex((e) => e.tag === "OC");
+      const seg = s.slice(fullS, fullE);
+      let rep;
+      if (j < 0) {
+        rep = edit.res ? `/OC /${edit.res} BDC\n${seg}\nEMC` : seg;
+      } else {
+        const closing = outer.slice(j).map(() => "EMC").join("\n");
+        const keepTags = outer.slice(j + 1).filter((e) => e.tag !== "OC").map((e) => opText(s, ops[e.k]));
+        const open = (edit.res ? [`/OC /${edit.res} BDC`] : []).concat(keepTags);
+        const reopen = outer.slice(j).map((e) => opText(s, ops[e.k])).join("\n");
+        rep = `\n${closing}\n${open.join("\n")}\n${seg}\n${open.map(() => "EMC").join("\n")}\n${reopen}\n`;
+      }
+      return splice(fullS, fullE, rep);
+    }
+    case "replaceText": {
+      // new text drawn in page space at the original text's position and angle
+      const inv = invert(o.ctm);
+      const body = `q ${inv.map(f4).join(" ")} cm\n${edit.block}\nQ`;
+      const props = { ...(o.wrap ? o.wrap.props : {}), ...edit.props };
+      return splice(fullS, fullE, `/PPObj ${propsToPdf(props)} BDC\n${body}\nEMC${tail}`);
+    }
+    case "swapForm":
+      return splice(ops[o.a].s, ops[o.a].e, `/${edit.name} Do`);
+    default:
+      throw new Error("Unknown edit " + edit.action);
+  }
 }
 
-// Append a placed form (e.g. a barcode) at page coordinates, isolated from
-// whatever graphics state the existing content leaves behind.
-export function appendForm(s, name, x, y) {
-  return `q\n${s}\nQ\nq 1 0 0 1 ${f4(x)} ${f4(y)} cm /${name} Do Q\n`;
+// Append page-space content, isolating it from whatever state the existing
+// content leaves behind (only wrapped when that state isn't already clean).
+export function appendBlock(s, ops, block) {
+  return endIsClean(ops) ? `${s}\n${block}\n` : `q\n${s}\nQ\n${block}\n`;
 }

@@ -4,9 +4,9 @@
 import bwipjs from "./bwip-js.mjs";
 
 export const TYPES = {
-  ean13: { label: "EAN-13", linear: true, qz: [11, 7], x: 0.33, h: 22.85, sample: "590123412345" },
-  upca: { label: "UPC-A", linear: true, qz: [9, 9], x: 0.33, h: 22.85, sample: "03600029145" },
-  ean8: { label: "EAN-8", linear: true, qz: [7, 7], x: 0.33, h: 18.23, sample: "9638507" },
+  ean13: { label: "EAN-13", mag: [80, 200], linear: true, qz: [11, 7], x: 0.33, h: 22.85, sample: "590123412345" },
+  upca: { label: "UPC-A", mag: [80, 200], linear: true, qz: [9, 9], x: 0.33, h: 22.85, sample: "03600029145" },
+  ean8: { label: "EAN-8", mag: [80, 200], linear: true, qz: [7, 7], x: 0.33, h: 18.23, sample: "9638507" },
   "gs1-128": { label: "GS1-128", linear: true, qz: [10, 10], x: 0.495, h: 31.75, sample: "(01)09501101530003(17)261231(10)AB12" },
   code128: { label: "Code 128", linear: true, qz: [10, 10], x: 0.33, h: 15, sample: "ABC-12345" },
   itf14: { label: "ITF-14", linear: true, qz: [10, 10], x: 0.635, h: 32, sample: "15400141288763" },

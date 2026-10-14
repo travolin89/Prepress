@@ -41,9 +41,9 @@ const seps = (payload, transfer) => { if (!gsCall) gsCall = rpcWorker("seps-work
 const S = {
   name: "", pages: 0, page: 0, open: false,
   boxes: null, rotation: 0, spots: {}, docInks: [], dpi: 150, effDpi: 150, w: 0, h: 0,
-  plates: null, platesVer: -1, enabled: new Set(), sepsOn: false, boxesOn: true,
-  mode: "pan", objects: [], sel: -1, edits: 0, ver: 0, gsVer: -1,
-  z: 1, tx: 0, ty: 0, highlights: [], issues: [], bcTypes: [],
+  plates: null, enabled: new Set(), sepsOn: false, boxesOn: true,
+  mode: "pan", objects: [], sels: [], edits: 0, ver: 0, gsVer: -1,
+  z: 1, tx: 0, ty: 0, highlights: [], issues: [], bcTypes: [], layers: [], fonts: [],
 };
 
 // ------------------------------------------------------------------ helpers
@@ -63,8 +63,9 @@ function dialog(title, html, actions) {
   $("dlg").showModal();
 }
 const oops = (title, err) => dialog(title, esc(err.message || err), [["OK"]]);
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const num = (id, dflt) => { const v = parseFloat(String($(id).value).replace(",", ".")); return Number.isFinite(v) ? v : dflt; };
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const num = (id, dflt) => { const el = typeof id === "string" ? $(id) : id; const v = parseFloat(String(el.value).replace(",", ".")); return Number.isFinite(v) ? v : dflt; };
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 function inkRGB(name) {
   if (PROCESS_INKS[name]) return PROCESS_INKS[name];
   if (S.spots[name]) return S.spots[name];
@@ -77,13 +78,68 @@ function setEdits(n) {
   $("undo").disabled = !S.open || n === 0;
 }
 function enable(on) {
-  for (const id of ["save", "prev", "next", "fit", "seps", "mPan", "mSel", "mMeas", "boxesBtn", "dpi", "covBtn", "pfRun", "bcAdd", "bcTap"]) $(id).disabled = !on;
+  for (const id of ["save", "prev", "next", "fit", "seps", "mPan", "mSel", "mMeas", "boxesBtn", "dpi", "covBtn", "pfRun", "bcAdd", "bcTap", "newLayerBtn", "unlockAll", "txTap", "txAdd"]) $(id).disabled = !on;
   setEdits(S.edits);
 }
 const mm = (pt) => (pt * PT_TO_MM).toFixed(2);
 const pxPerPt = () => S.w / (S.boxes.MediaBox[2] - S.boxes.MediaBox[0]);
 const toPx = (b) => { const mb = S.boxes.MediaBox, s = pxPerPt(); return [(b[0] - mb[0]) * s, (mb[3] - b[3]) * s, (b[2] - b[0]) * s, (b[3] - b[1]) * s]; };
 const trimOrigin = () => (S.boxes.TrimBox || S.boxes.MediaBox);
+const union = (bbs) => bbs.reduce((u, b) => [Math.min(u[0], b[0]), Math.min(u[1], b[1]), Math.max(u[2], b[2]), Math.max(u[3], b[3])], [Infinity, Infinity, -Infinity, -Infinity]);
+
+// ------------------------------------------------------------------ fonts (kept on this iPad)
+function idb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("prepress", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("fonts");
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function storedFonts() {
+  const db = await idb();
+  return new Promise((res) => {
+    const out = [];
+    const req = db.transaction("fonts").objectStore("fonts").openCursor();
+    req.onsuccess = (e) => { const c = e.target.result; if (c) { out.push(c.value); c.continue(); } else res(out); };
+    req.onerror = () => res(out);
+  });
+}
+async function storeFont(name, data) {
+  const db = await idb();
+  return new Promise((res) => { const tx = db.transaction("fonts", "readwrite"); tx.objectStore("fonts").put({ name, data }, name); tx.oncomplete = res; tx.onerror = res; });
+}
+async function loadFonts() {
+  try { for (const f of await storedFonts()) { const copy = f.data.slice(0); await call("registerFont", { data: copy }, [copy]); } } catch {}
+  await refreshFontLists();
+}
+async function refreshFontLists() {
+  const f = await call("fonts");
+  S.fonts = [...f.builtin, ...f.imported];
+  for (const sel of [$("txFont"), ...document.querySelectorAll(".fontSel")]) fillFontSelect(sel);
+}
+function fillFontSelect(sel, value) {
+  const keep = value ?? sel.value;
+  sel.innerHTML = S.fonts.map((f) => `<option value="${esc(f.id)}">${esc(f.name)}${f.id.startsWith("u:") ? " (imported)" : ""}</option>`).join("");
+  if (keep && S.fonts.some((f) => f.id === keep)) sel.value = keep;
+}
+$("fontFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  busy("Importing font…");
+  try {
+    const data = await file.arrayBuffer();
+    const keep = data.slice(0);
+    const r = await call("registerFont", { data }, [data]);
+    await storeFont(r.name, keep);
+    await refreshFontLists();
+    $("txFont").value = r.id;
+    busy("");
+    dialog("Font imported", `<p><b>${esc(r.name)}</b> is ready and will stay on this iPad.</p>`, [["OK"]]);
+  } catch (err) { busy(""); oops("Font not imported", err); }
+});
+loadFonts();
 
 // ------------------------------------------------------------------ open
 $("file").addEventListener("change", async (e) => {
@@ -94,7 +150,7 @@ $("file").addEventListener("change", async (e) => {
   try {
     const buf = new Uint8Array(await f.arrayBuffer());
     const info = await call("open", { bytes: buf.buffer }, [buf.buffer]);
-    Object.assign(S, { name: f.name, pages: info.pages, page: 0, plates: null, open: true, docInks: info.inks, sel: -1, issues: [], highlights: [] });
+    Object.assign(S, { name: f.name, pages: info.pages, page: 0, plates: null, open: true, docInks: info.inks, sels: [], issues: [], highlights: [] });
     S.ver++;
     $("report").textContent = info.report.join("\n") + (info.incremental ? "" : "\n\n⚠ File needs repair: saves will be full rewrites.");
     $("empty").style.display = "none";
@@ -102,7 +158,9 @@ $("file").addEventListener("change", async (e) => {
     setEdits(0);
     enable(true);
     if (!S.bcTypes.length) { S.bcTypes = await call("barcodeTypes"); fillBarcodeTypes(); }
-    fillInkSelect($("bcInk"));
+    for (const sel of [$("bcInk"), $("txInk")]) fillInkSelect(sel);
+    S.layers = await call("layers");
+    buildLayers();
     await loadPage(0, true);
   } catch (err) { oops("Could not open file", err); }
   finally { busy(""); }
@@ -110,7 +168,7 @@ $("file").addEventListener("change", async (e) => {
 
 async function loadPage(i, fit) {
   S.page = i;
-  S.sel = -1;
+  S.sels = [];
   S.highlights = S.highlights.filter((h) => h.page === i);
   $("pageinfo").textContent = `${i + 1} / ${S.pages}`;
   const p = await call("page", { i });
@@ -142,7 +200,7 @@ async function render(fit) {
       const r = await getPlates(S.page, S.effDpi);
       const known = S.plates ? new Set(S.plates.names) : null;
       S.enabled = new Set(r.names.filter((n) => !known || !known.has(n) || S.enabled.has(n)));
-      S.plates = { names: r.names, w: r.w, h: r.h, data: r.data, page: S.page, ver: S.ver, dpi: S.effDpi };
+      S.plates = { names: r.names, w: r.w, h: r.h, data: r.data, page: S.page, ver: S.ver };
       S.w = r.w; S.h = r.h;
       drawComposite();
     } else {
@@ -187,7 +245,8 @@ function drawComposite() {
 }
 
 // ------------------------------------------------------------------ overlay (boxes, selection, highlights)
-let drag = null; // { x0, y0, dx, dy } in px while dragging a selection
+let drag = null;    // moving the selection: { start, dx, dy } (image px)
+let marquee = null; // selecting by area: { x0, y0, x1, y1 } (image px)
 function rect(svg, r, stroke, dash, extra = {}) {
   const el = document.createElementNS(SVGNS, "rect");
   el.setAttribute("x", r[0]); el.setAttribute("y", r[1]); el.setAttribute("width", Math.max(r[2], 0.5)); el.setAttribute("height", Math.max(r[3], 0.5));
@@ -204,12 +263,14 @@ function drawOverlay() {
   if (!S.boxes || S.rotation) return;
   if (S.boxesOn) for (const [name, b] of Object.entries(S.boxes)) rect(svg, toPx(b), BOX_STYLE[name][0], BOX_STYLE[name][1]);
   for (const h of S.highlights) if (h.page === S.page && h.rect) rect(svg, toPx(h.rect), "#ff9f0a", "", { fill: "rgba(255,159,10,.18)", width: "2" });
-  const o = S.objects[S.sel];
-  if (o) {
-    const r = toPx(o.bbox);
-    rect(svg, r, "#3d8bfd", "", { width: "2" });
+  const sel = S.sels.map((k) => S.objects[k]).filter(Boolean);
+  if (sel.length) {
+    for (const o of sel) rect(svg, toPx(o.bbox), "#3d8bfd", sel.length > 1 ? "3 3" : "", { width: "1.5" });
+    const r = toPx(union(sel.map((o) => o.bbox)));
+    if (sel.length > 1) rect(svg, r, "#3d8bfd", "", { width: "2" });
     if (drag) rect(svg, [r[0] + drag.dx, r[1] + drag.dy, r[2], r[3]], "#3d8bfd", "5 4", { fill: "rgba(61,139,253,.12)", width: "2" });
   }
+  if (marquee) rect(svg, [Math.min(marquee.x0, marquee.x1), Math.min(marquee.y0, marquee.y1), Math.abs(marquee.x1 - marquee.x0), Math.abs(marquee.y1 - marquee.y0)], "#3d8bfd", "4 3", { fill: "rgba(61,139,253,.08)" });
 }
 
 // ------------------------------------------------------------------ inks tab + coverage
@@ -244,9 +305,8 @@ function buildInks() {
   }
 }
 
-function areaStats(pl, region) {
-  // region in pt (PDF coords) -> per-ink mean coverage, max total ink and where
-  const mb = S.boxes.MediaBox, s = pl.w / (mb[2] - mb[0]);
+function areaStats(pl, region, mb) {
+  const s = pl.w / (mb[2] - mb[0]);
   const x0 = Math.max(0, Math.floor((region[0] - mb[0]) * s)), x1 = Math.min(pl.w, Math.ceil((region[2] - mb[0]) * s));
   const y0 = Math.max(0, Math.floor((mb[3] - region[3]) * s)), y1 = Math.min(pl.h, Math.ceil((mb[3] - region[1]) * s));
   const sums = pl.names.map(() => 0);
@@ -270,7 +330,7 @@ $("covBtn").onclick = async () => {
   try {
     const pl = S.plates && S.plates.ver === S.ver && S.plates.page === S.page ? S.plates : await getPlates(S.page, Math.min(100, S.effDpi));
     const region = S.boxes.TrimBox || S.boxes.MediaBox;
-    const st = areaStats(pl, region);
+    const st = areaStats(pl, region, S.boxes.MediaBox);
     const areaCm2 = ((region[2] - region[0]) * (region[3] - region[1]) * PT_TO_MM * PT_TO_MM) / 100;
     let html = `<table class="cov"><tr><th>Ink</th><th>Coverage</th><th>Solid cm²</th></tr>`;
     pl.names.forEach((n, k) => {
@@ -284,79 +344,129 @@ $("covBtn").onclick = async () => {
   finally { busy(""); }
 };
 
-// ------------------------------------------------------------------ edit tab
-function inkOptions(withNew) {
+// ------------------------------------------------------------------ inks for selects
+function inkOptions() {
   const process = ["Black", "Cyan", "Magenta", "Yellow"];
-  return [...process, ...S.docInks.filter((n) => !process.includes(n)), ...(withNew ? ["＋ New spot…"] : [])];
+  return [...process, ...S.docInks.filter((n) => !process.includes(n)), "＋ New spot…"];
 }
-function fillInkSelect(sel, withNew = true) {
-  const keep = sel.value;
-  sel.innerHTML = inkOptions(withNew).map((n) => `<option>${esc(n)}</option>`).join("");
+function fillInkSelect(sel, value) {
+  const keep = value ?? sel.value;
+  sel.innerHTML = inkOptions().map((n) => `<option>${esc(n)}</option>`).join("");
   if ([...sel.options].some((o) => o.value === keep)) sel.value = keep;
 }
-function readInk(sel, nameId, cmykId) {
+function readInk(sel, nameEl, cmykEl) {
   if (!sel.value.startsWith("＋")) return { name: sel.value };
-  const name = $(nameId).value.trim();
-  const cmyk = $(cmykId).value.trim().split(/[\s,]+/).map(Number);
+  const name = nameEl.value.trim();
+  const cmyk = cmykEl.value.trim().split(/[\s,]+/).map(Number);
   if (!name || cmyk.length !== 4 || cmyk.some((v) => !(v >= 0 && v <= 100))) throw new Error("Give the new spot a name and four CMYK values from 0 to 100.");
   return { name, cmyk };
 }
+function inkBlock(prefix, value, tint) {
+  return `<label>Ink<select id="${prefix}Ink"></select></label><label>Tint %<input id="${prefix}Tint" inputmode="decimal" value="${tint ?? 100}"></label>
+    <div class="grid2 span2" id="${prefix}New" hidden style="grid-column:span 2"><label class="span2">New spot name<input id="${prefix}Name" value="New spot"></label><label class="span2">Screen colour (C M Y K %)<input id="${prefix}CMYK" value="0 0 0 50"></label></div>`;
+}
+function wireInk(prefix, value) {
+  fillInkSelect($(prefix + "Ink"), value);
+  $(prefix + "Ink").onchange = () => { $(prefix + "New").hidden = !$(prefix + "Ink").value.startsWith("＋"); };
+}
+const inkOf = (prefix) => readInk($(prefix + "Ink"), $(prefix + "Name"), $(prefix + "CMYK"));
+const tintOf = (prefix) => clamp(num(prefix + "Tint", 100), 0, 100);
 
+// ------------------------------------------------------------------ selection
+const selectable = (o) => o && !o.clip && !o.locked && !o.layerLocked && !o.layerHidden;
+function expandGroups(ks) {
+  const out = new Set(ks);
+  for (const k of ks) { const g = S.objects[k]?.group; if (g) S.objects.forEach((o) => { if (o.group === g && selectable(o)) out.add(o.k); }); }
+  return [...out].sort((a, b) => a - b);
+}
+function setSelection(ks) {
+  S.sels = ks;
+  drawOverlay();
+  buildSelCard();
+  const sel = ks.map((k) => S.objects[k]);
+  $("readout").innerHTML = sel.length === 1 ? `<span>${esc(sel[0].desc)}</span>` : sel.length ? `<span>${sel.length} objects selected</span>` : `<span class="k">Nothing selected</span>`;
+}
+
+// ------------------------------------------------------------------ edit tab
 function buildSelCard() {
   const box = $("selCard");
-  const o = S.objects[S.sel];
-  if (!o) { box.innerHTML = S.open ? `<div class="hint">Nothing selected.</div>` : ""; return; }
-  const t = trimOrigin();
-  const canInk = o.type === "path" || o.type === "text";
+  const lockedCount = S.objects.filter((o) => o.locked).length;
+  $("unlockAll").textContent = lockedCount ? `Unlock all (${lockedCount})` : "Unlock all";
+  $("unlockAll").disabled = !lockedCount;
+  const sel = S.sels.map((k) => S.objects[k]).filter(Boolean);
+  if (!sel.length) { box.innerHTML = S.open ? `<div class="hint">Nothing selected.</div>` : ""; return; }
+  const t = trimOrigin(), u = union(sel.map((o) => o.bbox));
+  const one = sel.length === 1 ? sel[0] : null;
+  const groups = new Set(sel.map((o) => o.group).filter(Boolean));
+  const layerNames = [...new Set(sel.map((o) => (o.layer ? o.layer.name : "no layer")))];
+  const canInk = sel.some((o) => o.type === "path" || o.type === "text");
+  const tags = [groups.size ? `<span class="tag">Grouped</span>` : "", `<span class="tag">${esc(layerNames.join(", "))}</span>`].join("");
   box.innerHTML = `<div class="card">
-    <div class="t">${esc(o.desc)}</div>
-    <div class="s">x ${mm(o.bbox[0] - t[0])} · y ${mm(o.bbox[1] - t[1])} mm from trim · ${mm(o.bbox[2] - o.bbox[0])} × ${mm(o.bbox[3] - o.bbox[1])} mm</div>
-    ${o.locked ? `<div class="hint warn">This path also clips other artwork, so it can't be edited on its own.</div>` : `
+    <div class="t">${one ? esc(one.desc) : `${sel.length} objects`}</div>
+    <div class="s">${tags} x ${mm(u[0] - t[0])} · y ${mm(u[1] - t[1])} mm from trim · ${mm(u[2] - u[0])} × ${mm(u[3] - u[1])} mm</div>
     <div class="row" style="align-items:flex-start;gap:12px">
       <div class="nudge"><span></span><button data-n="0,1">↑</button><span></span><button data-n="-1,0">←</button><button data-n="0,-1">↓</button><button data-n="1,0">→</button></div>
       <div class="grid2" style="flex:1"><label>Step mm<select id="nStep"><option>0.1</option><option>0.5</option><option selected>1</option><option>5</option></select></label>
         <label>Move X mm<input id="mvX" inputmode="decimal" value="0"></label><label>Move Y mm<input id="mvY" inputmode="decimal" value="0"></label>
         <label>&nbsp;<button id="mvGo">Move</button></label></div>
     </div>
-    ${canInk ? `<div class="grid2" style="margin-top:10px"><label>Ink<select id="rcInk"></select></label><label>Tint %<input id="rcTint" inputmode="decimal" value="100"></label></div>
-    <div class="grid2" id="rcNew" hidden><label class="span2">New spot name<input id="rcName" value="New spot"></label><label class="span2">Screen colour (C M Y K %)<input id="rcCMYK" value="0 0 0 50"></label></div>
-    <div class="row"><button id="rcGo">Apply ink</button><button id="delGo" class="danger">Delete</button></div>`
-    : `<div class="row"><button id="delGo" class="danger">Delete</button></div>`}`}
+    <div class="row">
+      ${sel.length > 1 && !(groups.size === 1 && sel.every((o) => o.group)) ? `<button id="grpGo">Group</button>` : ""}
+      ${groups.size ? `<button id="ungrpGo">Ungroup</button>` : ""}
+      <button id="lockGo">Lock</button><button id="delGo" class="danger">Delete</button>
+    </div>
+    <div class="grid2" style="margin-top:10px"><label>Layer<select id="lyTo"></select></label><label>&nbsp;<button id="lyGo">Move to layer</button></label></div>
+    ${canInk ? `<div class="grid2" style="margin-top:10px">${inkBlock("rc")}</div><div class="row"><button id="rcGo">Apply ink</button></div>` : ""}
+    ${one && one.type === "text" ? `<div id="txEdit"></div>` : ""}
+    ${one && one.barcode ? `<div id="bcEdit"></div>` : ""}
   </div>`;
-  if (o.locked) return;
   box.querySelectorAll("[data-n]").forEach((b) => (b.onclick = () => {
     const [ux, uy] = b.dataset.n.split(",").map(Number), st = parseFloat($("nStep").value);
-    moveSel(ux * st / PT_TO_MM, uy * st / PT_TO_MM);
+    moveSel((ux * st) / PT_TO_MM, (uy * st) / PT_TO_MM);
   }));
   $("mvGo").onclick = () => moveSel(num("mvX", 0) / PT_TO_MM, num("mvY", 0) / PT_TO_MM);
-  $("delGo").onclick = () => doEdit({ action: "delete", obj: S.sel }, true);
+  $("delGo").onclick = () => doEdit({ action: "delete" }, true);
+  $("lockGo").onclick = () => doEdit({ action: "lock" }, true);
+  if ($("grpGo")) $("grpGo").onclick = () => doEdit({ action: "group" });
+  if ($("ungrpGo")) $("ungrpGo").onclick = () => doEdit({ action: "ungroup" });
+  $("lyTo").innerHTML = `<option value="">(no layer)</option>` + S.layers.map((l) => `<option value="${l.id}" ${l.locked ? "disabled" : ""}>${esc(l.name)}${l.locked ? " (locked)" : ""}</option>`).join("");
+  if (one && one.layer) $("lyTo").value = one.layer.id;
+  $("lyGo").onclick = () => doEdit({ action: "layer", layerId: $("lyTo").value ? +$("lyTo").value : null });
   if (canInk) {
-    fillInkSelect($("rcInk"));
-    $("rcInk").onchange = () => { $("rcNew").hidden = !$("rcInk").value.startsWith("＋"); };
+    wireInk("rc");
     $("rcGo").onclick = () => {
       let ink;
-      try { ink = readInk($("rcInk"), "rcName", "rcCMYK"); } catch (e) { return oops("Ink", e); }
-      doEdit({ action: "recolour", obj: S.sel, ink, tint: Math.min(100, Math.max(0, num("rcTint", 100))) });
+      try { ink = inkOf("rc"); } catch (e) { return oops("Ink", e); }
+      doEdit({ action: "recolour", ink, tint: tintOf("rc") });
     };
   }
+  if (one && one.type === "text") buildTextEditor(one);
+  if (one && one.barcode) buildBarcodeEditor(one);
 }
 
-function moveSel(dx, dy) { if (dx || dy) doEdit({ action: "move", obj: S.sel, dx, dy }); }
+function moveSel(dx, dy) { if (dx || dy) doEdit({ action: "move", dx, dy }); }
+
+async function afterEdit(r, keepSel) {
+  S.objects = r.objects; if (r.inks) S.docInks = r.inks;
+  S.ver++;
+  setEdits(r.edits);
+  if (keepSel === "last") S.sels = [S.objects.length - 1];
+  else if (!keepSel) S.sels = [];
+  else S.sels = S.sels.filter((k) => selectable(S.objects[k]));
+  S.spots = (await call("page", { i: S.page })).spots;
+  await render(false);
+  buildSelCard();
+  for (const sel of [$("bcInk"), $("txInk")]) fillInkSelect(sel);
+}
 
 async function doEdit(args, clearSel) {
   busy("Applying…");
   try {
-    const r = await call("edit", { i: S.page, ...args });
-    S.objects = r.objects; S.docInks = r.inks;
-    S.ver++;
-    setEdits(r.edits);
-    if (clearSel) S.sel = -1;
-    S.spots = (await call("page", { i: S.page })).spots;
-    await render(false);
-    buildSelCard();
-    fillInkSelect($("bcInk"));
+    const r = await call("edit", { i: S.page, objs: S.sels, ...args });
+    await afterEdit(r, !clearSel);
   } catch (err) { busy(""); oops("Edit not applied", err); }
 }
+$("unlockAll").onclick = () => doEdit({ action: "unlockAll", objs: [] }, true);
 
 $("undo").onclick = async () => {
   busy("Undoing…");
@@ -366,10 +476,110 @@ $("undo").onclick = async () => {
     setEdits(r.edits);
     if (r.report) $("report").textContent = r.report.join("\n");
     if (r.inks) S.docInks = r.inks;
+    S.layers = await call("layers");
+    buildLayers();
     busy("");
     await loadPage(r.page ?? S.page, false);
   } catch (err) { oops("Undo", err); }
   finally { busy(""); }
+};
+
+// ------------------------------------------------------------------ text: edit selected
+async function buildTextEditor(o) {
+  const el = $("txEdit");
+  const t = o.text;
+  let text = t.ours ? t.text : "";
+  if (!t.ours) { try { text = await call("textOf", { i: S.page, k: o.k }); } catch {} }
+  el.innerHTML = `<h2>Text</h2>
+    ${t.ours ? "" : `<div class="hint">This text uses the file's own font (${esc(t.fontRes || "?")}), which is usually a subset. Updating replaces it with the font you choose, in the same position.</div>`}
+    <div class="grid2">
+      <label class="span2">Text<textarea id="teText" rows="3" autocapitalize="off" spellcheck="false">${esc(text)}</textarea></label>
+      <label class="span2">Font<select id="teFont" class="fontSel"></select></label>
+      <label>Size pt<input id="teSize" inputmode="decimal" value="${t.size ?? 10}"></label>
+      <label>Line spacing pt<input id="teLead" inputmode="decimal" value="${t.lead ?? +((t.size ?? 10) * 1.2).toFixed(2)}"></label>
+      <label class="span2">Align<select id="teAlign"><option value="l">Left</option><option value="c">Centre</option><option value="r">Right</option></select></label>
+      ${inkBlock("te", null, t.tint)}
+    </div>
+    <div class="row"><button id="teGo" class="on">Update text</button></div>`;
+  fillFontSelect($("teFont"), t.ours ? t.font : "b:Helvetica");
+  $("teAlign").value = t.align || "l";
+  wireInk("te", t.ours ? t.ink : "Black");
+  if (t.ours && t.cmyk && !inkOptions().includes(t.ink)) { $("teInk").value = "＋ New spot…"; $("teNew").hidden = false; $("teName").value = t.ink; $("teCMYK").value = t.cmyk; }
+  $("teGo").onclick = async () => {
+    let ink;
+    try { ink = inkOf("te"); } catch (e) { return oops("Ink", e); }
+    const spec = { text: $("teText").value, font: $("teFont").value, size: num("teSize", 10), lead: num("teLead", 12), align: $("teAlign").value, ink, tint: tintOf("te") };
+    if (!spec.text.trim()) return oops("Text", new Error("Type some text, or delete the object instead."));
+    busy("Updating text…");
+    try { await afterEdit(await call("replaceText", { i: S.page, obj: o.k, spec }), true); }
+    catch (err) { busy(""); oops("Text not updated", err); }
+  };
+}
+
+// ------------------------------------------------------------------ text: add new
+$("txInk").addEventListener("change", () => { $("txNewInk").hidden = !$("txInk").value.startsWith("＋"); });
+$("txAdd").onclick = async () => {
+  let ink;
+  try { ink = readInk($("txInk"), $("txInkName"), $("txInkCMYK")); } catch (e) { return oops("Ink", e); }
+  const spec = { text: $("txText").value, font: $("txFont").value, size: num("txSize", 10), lead: num("txLead", 12), align: $("txAlign").value, ink, tint: clamp(num("txTint", 100), 0, 100) };
+  if (!spec.text.trim()) return oops("Text", new Error("Type some text first."));
+  busy("Adding text…");
+  try { await afterEdit(await call("addText", { i: S.page, spec, xMM: num("txX", 0), yMM: num("txY", 0) }), "last"); showTab("edit"); setMode("select"); }
+  catch (err) { busy(""); oops("Text not added", err); }
+};
+
+// ------------------------------------------------------------------ layers tab
+function buildLayers() {
+  const box = $("layerList");
+  if (!S.open) return;
+  if (!S.layers.length) { box.innerHTML = `<div class="hint">This file has no layers yet.</div>`; return; }
+  box.innerHTML = S.layers.map((l) => `<div class="layer" data-id="${l.id}">
+      <button class="vis ${l.visible ? "" : "off"}" title="Show/hide (view only)">${l.visible ? "👁" : "—"}</button>
+      <span class="nm">${esc(l.name)}</span>
+      <button class="ren" title="Rename">Rename</button>
+      <button class="lk" title="Lock/unlock">${l.locked ? "🔒" : "🔓"}</button></div>`).join("");
+  box.querySelectorAll(".layer").forEach((row) => {
+    const id = +row.dataset.id, l = S.layers.find((x) => x.id === id);
+    row.querySelector(".vis").onclick = async () => {
+      busy("Updating view…");
+      try {
+        S.layers = await call("layerView", { id, visible: !l.visible });
+        S.ver++; // separations follow the view
+        S.objects = await call("objects", { i: S.page });
+        S.sels = S.sels.filter((k) => selectable(S.objects[k]));
+        buildLayers();
+        await render(false);
+        buildSelCard();
+      } catch (err) { oops("Layers", err); } finally { busy(""); }
+    };
+    row.querySelector(".lk").onclick = () => layerEdit({ kind: "lockLayer", id, locked: !l.locked });
+    row.querySelector(".ren").onclick = () => {
+      dialog("Rename layer", `<input id="renName" value="${esc(l.name)}" style="width:100%;min-height:40px;font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:0 8px">`,
+        [["Cancel"], ["Rename", () => { const n = $("renName").value.trim(); if (n && n !== l.name) layerEdit({ kind: "renameLayer", id, name: n }); }, "on"]]);
+    };
+  });
+}
+async function layerEdit(op) {
+  busy("Updating layers…");
+  try {
+    const r = await call("layerEdit", op);
+    S.layers = r.layers;
+    $("report").textContent = r.report.join("\n");
+    S.ver++;
+    setEdits(r.edits);
+    S.objects = await call("objects", { i: S.page });
+    S.sels = S.sels.filter((k) => selectable(S.objects[k]));
+    buildLayers();
+    drawOverlay();
+    buildSelCard();
+  } catch (err) { oops("Layers", err); } finally { busy(""); }
+}
+$("newLayerBtn").onclick = () => {
+  const name = $("newLayerName").value.trim();
+  if (!name) return oops("New layer", new Error("Type a name for the layer."));
+  if (S.layers.some((l) => l.name === name)) return oops("New layer", new Error("A layer with that name already exists."));
+  $("newLayerName").value = "";
+  layerEdit({ kind: "newLayer", name });
 };
 
 // ------------------------------------------------------------------ page boxes
@@ -433,16 +643,15 @@ $("pfRun").onclick = async () => {
     for (let i = 0; i < S.pages; i++) {
       busy(`Checking ink limits, page ${i + 1} of ${S.pages}…`);
       const pl = await getPlates(i, 50);
-      const pageBoxes = i === S.page ? S.boxes : (await call("page", { i })).boxes;
-      const saved = S.boxes; S.boxes = pageBoxes;
-      const st = areaStats(pl, pageBoxes.MediaBox);
-      S.boxes = saved;
+      const pb = i === S.page ? S.boxes : (await call("page", { i })).boxes;
+      const st = areaStats(pl, pb.MediaBox, pb.MediaBox);
       if (st.maxTAC > lim + 0.5) {
-        const mb = pageBoxes.MediaBox, s = st.s, [x, y] = st.maxAt;
+        const mb = pb.MediaBox, s = st.s, [x, y] = st.maxAt;
         const r = [mb[0] + x / s - 4, mb[3] - y / s - 4, mb[0] + x / s + 4, mb[3] - y / s + 4];
         issues.push({ sev: "warn", page: i + 1, title: `Total ink above ${lim}%`, detail: `Highest ${st.maxTAC.toFixed(0)}% · ${(st.overArea * PT_TO_MM * PT_TO_MM).toFixed(1)} mm² over`, rects: [r], count: 1 });
       }
     }
+    if (S.layers.some((l) => !l.visible)) issues.push({ sev: "info", page: 0, title: "Some layers are hidden in the view", detail: "Content checks include them; the ink limit check follows the view", rects: [], count: 1 });
     S.issues = issues;
     showIssues();
   } catch (err) { oops("Preflight", err); }
@@ -475,49 +684,92 @@ function zoomTo(r) {
   applyView();
 }
 
-// ------------------------------------------------------------------ barcodes
+// ------------------------------------------------------------------ barcodes (sized by magnification)
+const bcType = (id) => S.bcTypes.find((x) => x.id === id);
 function fillBarcodeTypes() {
   $("bcType").innerHTML = S.bcTypes.map((t) => `<option value="${t.id}">${esc(t.label)}</option>`).join("");
   $("bcType").onchange = applyTypeDefaults;
   applyTypeDefaults();
 }
 function applyTypeDefaults() {
-  const t = S.bcTypes.find((x) => x.id === $("bcType").value);
+  const t = bcType($("bcType").value);
   $("bcData").value = t.sample;
-  $("bcX").value = t.x;
-  $("bcH").value = t.h ?? "";
+  $("bcMag").value = 100;
+  $("bcHP").value = 100;
   $("bcHwrap").hidden = !t.linear;
   $("bcHRIwrap").hidden = !t.linear;
   updateBcInfo();
 }
-function updateBcInfo() {
-  const t = S.bcTypes.find((x) => x.id === $("bcType").value);
-  if (!t) return;
-  const x = num("bcX", t.x);
-  $("bcInfo").textContent = ["ean13", "upca", "ean8"].includes(t.id) ? `Magnification ${Math.round((x / 0.33) * 100)}% (nominal module 0.33 mm). Check digit is added if left off.` : "Position is the lower-left corner of the code, including its quiet zone.";
+function sizeFor(t, mag, hpct) {
+  return { moduleMM: +((t.x * mag) / 100).toFixed(4), heightMM: t.linear ? +((((t.h * mag) / 100) * hpct) / 100).toFixed(3) : 0 };
 }
-$("bcX").addEventListener("input", updateBcInfo);
+function magProblem(t, mag) {
+  const [lo, hi] = t.mag || [25, 400];
+  return mag < lo || mag > hi ? `${t.label} must be between ${lo}% and ${hi}% magnification.` : null;
+}
+function bcInfoText(t, mag, hpct) {
+  const z = sizeFor(t, mag, hpct);
+  return `Module ${z.moduleMM.toFixed(3)} mm${t.linear ? ` · bar height ${z.heightMM.toFixed(2)} mm` : ""}. 100% = ${t.x} mm module${t.linear ? `, ${t.h} mm bars` : ""}.${t.mag ? ` Allowed ${t.mag[0]}–${t.mag[1]}%.` : ""}${t.linear && hpct < 100 ? " Bars truncated." : ""}`;
+}
+function updateBcInfo() {
+  const t = bcType($("bcType").value);
+  if (t) $("bcInfo").textContent = bcInfoText(t, num("bcMag", 100), num("bcHP", 100));
+}
+$("bcMag").addEventListener("input", updateBcInfo);
+$("bcHP").addEventListener("input", updateBcInfo);
 $("bcInk").addEventListener("change", () => { $("bcNewInk").hidden = !$("bcInk").value.startsWith("＋"); });
 $("bcAdd").onclick = async () => {
   let ink;
-  try { ink = readInk($("bcInk"), "bcInkName", "bcInkCMYK"); } catch (e) { return oops("Ink", e); }
-  const t = S.bcTypes.find((x) => x.id === $("bcType").value);
-  const spec = { type: t.id, data: $("bcData").value.trim(), moduleMM: num("bcX", t.x), heightMM: num("bcH", t.h || 20), bwrMM: num("bcBWR", 0), hri: $("bcHRI").checked };
+  try { ink = readInk($("bcInk"), $("bcInkName"), $("bcInkCMYK")); } catch (e) { return oops("Ink", e); }
+  const t = bcType($("bcType").value), mag = num("bcMag", 100), hpct = clamp(num("bcHP", 100), 10, 100);
+  const bad = magProblem(t, mag);
+  if (bad) return oops("Magnification", new Error(bad));
+  const spec = { type: t.id, data: $("bcData").value.trim(), ...sizeFor(t, mag, hpct), bwrMM: num("bcBWR", 0), hri: $("bcHRI").checked };
   busy("Building barcode…");
-  try {
-    const r = await call("barcode", { i: S.page, spec, ink, tint: Math.min(100, Math.max(0, num("bcTint", 100))), xMM: num("bcPosX", 0), yMM: num("bcPosY", 0) });
-    S.objects = r.objects; S.docInks = r.inks;
-    S.ver++;
-    setEdits(r.edits);
-    S.sel = S.objects.length - 1;
-    S.spots = (await call("page", { i: S.page })).spots;
-    await render(false);
-    buildSelCard();
-    fillInkSelect($("bcInk"));
-  } catch (err) { busy(""); oops("Barcode not added", err); }
+  try { await afterEdit(await call("barcode", { i: S.page, spec, ink, tint: clamp(num("bcTint", 100), 0, 100), xMM: num("bcPosX", 0), yMM: num("bcPosY", 0), mag, hpct }), "last"); showTab("edit"); setMode("select"); }
+  catch (err) { busy(""); oops("Barcode not added", err); }
 };
-let placeArmed = false;
-$("bcTap").onclick = () => { placeArmed = !placeArmed; $("bcTap").classList.toggle("on", placeArmed); $("readout").innerHTML = placeArmed ? `<span>Tap the page where the barcode's lower-left corner should go</span>` : ""; };
+
+function buildBarcodeEditor(o) {
+  const m = o.barcode, t = bcType(m.bcid);
+  const el = $("bcEdit");
+  if (!t) { el.innerHTML = `<div class="hint">Unknown barcode type.</div>`; return; }
+  el.innerHTML = `<h2>${esc(t.label)}</h2><div class="grid2">
+      <label class="span2">Data<input id="beData" value="${esc(m.data)}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+      <label>Magnification %<input id="beMag" inputmode="decimal" value="${m.mag}"></label>
+      ${t.linear ? `<label>Bar height %<input id="beHP" inputmode="decimal" value="${m.hpct}"></label>` : "<span></span>"}
+      <label>BWR mm<input id="beBWR" inputmode="decimal" value="${+m.bwr.toFixed(4)}"></label>
+      ${t.linear ? `<label class="chk"><input id="beHRI" type="checkbox" ${m.hri ? "checked" : ""}> Digits</label>` : "<span></span>"}
+      ${inkBlock("be", null, m.tint)}
+    </div><div class="hint" id="beInfo"></div><div class="row"><button id="beGo" class="on">Update barcode</button></div>`;
+  wireInk("be", m.ink);
+  const info = () => { $("beInfo").textContent = bcInfoText(t, num("beMag", 100), t.linear ? num("beHP", 100) : 100) + " The lower-left corner stays where it is."; };
+  info();
+  $("beMag").oninput = info;
+  if ($("beHP")) $("beHP").oninput = info;
+  $("beGo").onclick = async () => {
+    let ink;
+    try { ink = inkOf("be"); } catch (e) { return oops("Ink", e); }
+    const mag = num("beMag", 100), hpct = t.linear ? clamp(num("beHP", 100), 10, 100) : 100;
+    const bad = magProblem(t, mag);
+    if (bad) return oops("Magnification", new Error(bad));
+    const spec = { type: t.id, data: $("beData").value.trim(), ...sizeFor(t, mag, hpct), bwrMM: num("beBWR", 0), hri: t.linear ? $("beHRI").checked : false };
+    busy("Updating barcode…");
+    try { await afterEdit(await call("barcodeEdit", { i: S.page, obj: o.k, spec, ink, tint: tintOf("be"), mag, hpct }), true); }
+    catch (err) { busy(""); oops("Barcode not updated", err); }
+  };
+}
+
+// ------------------------------------------------------------------ place by tap (barcode or text)
+let placeFor = null;
+function armPlace(target, btn) {
+  placeFor = placeFor === target ? null : target;
+  $("bcTap").classList.toggle("on", placeFor === "bc");
+  $("txTap").classList.toggle("on", placeFor === "tx");
+  $("readout").innerHTML = placeFor ? `<span>Tap the page where the ${target === "bc" ? "barcode's lower-left corner" : "text should start"} should go</span>` : "";
+}
+$("bcTap").onclick = () => armPlace("bc");
+$("txTap").onclick = () => armPlace("tx");
 
 // ------------------------------------------------------------------ toolbar
 $("prev").onclick = () => S.page > 0 && loadPage(S.page - 1, true);
@@ -537,9 +789,10 @@ function setMode(m) {
 $("mPan").onclick = () => setMode("pan");
 $("mSel").onclick = () => setMode("select");
 $("mMeas").onclick = () => setMode("measure");
+const TABS = ["inks", "layers", "edit", "text", "pre", "bc", "info"];
 function showTab(name) {
   document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
-  for (const t of ["inks", "edit", "pre", "bc", "info"]) $("tab-" + t).hidden = t !== name;
+  for (const t of TABS) $("tab-" + t).hidden = t !== name;
   if ($("aside").classList.contains("hidden") && S.open && name !== "inks") { $("aside").classList.remove("hidden"); $("panel").classList.add("on"); }
 }
 document.querySelectorAll("nav.tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
@@ -604,17 +857,17 @@ let pinch = null, lastTap = 0, moved = 0, lastPick = null;
 
 function pick(p) {
   const q = toPt(toImg(p)), tol = 3 / pxPerPt() / S.z + 1;
-  const hits = S.objects.filter((o) => q.x >= o.bbox[0] - tol && q.x <= o.bbox[2] + tol && q.y >= o.bbox[1] - tol && q.y <= o.bbox[3] + tol).map((o) => o.k).reverse();
+  const hits = S.objects.filter((o) => selectable(o) && q.x >= o.bbox[0] - tol && q.x <= o.bbox[2] + tol && q.y >= o.bbox[1] - tol && q.y <= o.bbox[3] + tol).map((o) => o.k).reverse();
   if (!hits.length) return -1;
-  const again = lastPick && Math.hypot(lastPick.x - p.x, lastPick.y - p.y) < 10 && hits.includes(S.sel);
+  const again = lastPick && Math.hypot(lastPick.x - p.x, lastPick.y - p.y) < 10 && hits.some((k) => S.sels.includes(k));
   lastPick = p;
-  return again ? hits[(hits.indexOf(S.sel) + 1) % hits.length] : hits[0];
+  if (!again) return hits[0];
+  const cur = hits.findIndex((k) => S.sels.includes(k));
+  return hits[(cur + 1) % hits.length];
 }
 function insideSel(p) {
-  const o = S.objects[S.sel];
-  if (!o) return false;
   const q = toPt(toImg(p)), tol = 6 / pxPerPt() / S.z;
-  return q.x >= o.bbox[0] - tol && q.x <= o.bbox[2] + tol && q.y >= o.bbox[1] - tol && q.y <= o.bbox[3] + tol;
+  return S.sels.some((k) => { const b = S.objects[k]?.bbox; return b && q.x >= b[0] - tol && q.x <= b[2] + tol && q.y >= b[1] - tol && q.y <= b[3] + tol; });
 }
 
 stage.addEventListener("pointerdown", (e) => {
@@ -624,11 +877,14 @@ stage.addEventListener("pointerdown", (e) => {
   pts.set(e.pointerId, p);
   moved = 0;
   if (pts.size === 2) {
-    drag = null;
+    drag = null; marquee = null; drawOverlay();
     const [a, b] = [...pts.values()];
     pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
   } else if (S.mode === "measure") readAt(p);
-  else if (S.mode === "select" && insideSel(p) && !S.objects[S.sel].locked) drag = { start: p, dx: 0, dy: 0 };
+  else if (S.mode === "select" && !placeFor) {
+    if (S.sels.length && insideSel(p)) drag = { start: p, dx: 0, dy: 0 };
+    else { const ip = toImg(p); marquee = { x0: ip.x, y0: ip.y, x1: ip.x, y1: ip.y, armed: false }; }
+  }
 });
 stage.addEventListener("pointermove", (e) => {
   if (!S.w) return;
@@ -649,34 +905,53 @@ stage.addEventListener("pointermove", (e) => {
       drag.dx = (p.x - drag.start.x) / S.z; drag.dy = (p.y - drag.start.y) / S.z;
       drawOverlay();
       $("readout").innerHTML = `<span>Move ${mm(drag.dx / pxPerPt())} mm, ${mm(-drag.dy / pxPerPt())} mm</span>`;
+    } else if (marquee) {
+      const ip = toImg(p);
+      marquee.x1 = ip.x; marquee.y1 = ip.y;
+      if (moved > 6) marquee.armed = true;
+      if (marquee.armed) drawOverlay();
     } else { S.tx += p.x - prev.x; S.ty += p.y - prev.y; applyView(); }
   }
 });
+function finishMarquee() {
+  const m = marquee;
+  marquee = null;
+  const a = toPt({ x: Math.min(m.x0, m.x1), y: Math.max(m.y0, m.y1) }), b = toPt({ x: Math.max(m.x0, m.x1), y: Math.min(m.y0, m.y1) });
+  const inside = S.objects.filter((o) => selectable(o) && o.bbox[0] >= a.x && o.bbox[1] >= a.y && o.bbox[2] <= b.x && o.bbox[3] <= b.y).map((o) => o.k);
+  const base = $("addSel").checked ? S.sels : [];
+  setSelection(expandGroups([...new Set([...base, ...inside])]));
+}
 const end = (e) => {
   const p = local(e);
   pts.delete(e.pointerId);
   if (pts.size < 2) pinch = null;
-  if (e.type !== "pointerup") { drag = null; drawOverlay(); return; }
+  if (e.type !== "pointerup") { drag = null; marquee = null; drawOverlay(); return; }
   if (drag) {
     const d = drag;
     drag = null;
     if (moved > 3) { moveSel(d.dx / pxPerPt(), -d.dy / pxPerPt()); return; }
     drawOverlay();
   }
+  if (marquee && marquee.armed) { finishMarquee(); return; }
+  marquee = null;
   if (moved < 8 && pts.size === 0) {
-    if (placeArmed) {
-      const q = toPt(toImg(p)), t = trimOrigin();
-      $("bcPosX").value = mm(q.x - t[0]); $("bcPosY").value = mm(q.y - t[1]);
-      placeArmed = false; $("bcTap").classList.remove("on");
-      $("readout").innerHTML = `<span>Barcode position set to ${$("bcPosX").value}, ${$("bcPosY").value} mm. Tap Add barcode.</span>`;
-      showTab("bc");
+    if (placeFor) {
+      const q = toPt(toImg(p)), t = trimOrigin(), target = placeFor;
+      const [xi, yi] = target === "bc" ? ["bcPosX", "bcPosY"] : ["txX", "txY"];
+      $(xi).value = mm(q.x - t[0]); $(yi).value = mm(q.y - t[1]);
+      armPlace(null);
+      $("readout").innerHTML = `<span>Position set to ${$(xi).value}, ${$(yi).value} mm. Tap ${target === "bc" ? "Add barcode" : "Add text"}.</span>`;
+      showTab(target === "bc" ? "bc" : "text");
       return;
     }
     if (S.mode === "select") {
-      S.sel = pick(p);
-      drawOverlay(); buildSelCard();
-      const o = S.objects[S.sel];
-      $("readout").innerHTML = o ? `<span>${esc(o.desc)}</span>` : `<span class="k">Nothing here</span>`;
+      const k = pick(p);
+      if ($("addSel").checked) {
+        if (k < 0) return;
+        const grp = expandGroups([k]);
+        const has = grp.every((x) => S.sels.includes(x));
+        setSelection(has ? S.sels.filter((x) => !grp.includes(x)) : expandGroups([...S.sels, ...grp]));
+      } else setSelection(k < 0 ? [] : expandGroups([k]));
       return;
     }
     if (e.pointerType === "touch" && S.mode === "pan") {

@@ -24,15 +24,29 @@ The website only delivers the app's code. Files you open are processed on the iP
 
 ### Inspector tabs
 - **Inks**: switch plates on and off. **Measure coverage** gives the ink % and solid-equivalent cm² per plate inside the trim.
-- **Edit**:
-  - For the selected object, nudge it, move it by an exact distance in mm, change its ink (process, an existing spot, or a new spot) and tint, or delete it.
-  - Page boxes, plus a one-tap bleed setting.
-- **Preflight**: checks for missing fonts, low-resolution and RGB images, RGB colour, hairlines and zero-width lines, small text, bleed, trim box, PDF/X marking and output intent, and total ink coverage. The limits are adjustable. Tap a result to jump to it on the page.
+- **Layers**: the file's PDF layers, the same ones ArtPro+ and Acrobat show.
+  - 👁 shows or hides a layer on screen and in the separations. This is a view setting only and is never saved.
+  - 🔒 locks a layer so its objects can't be selected or edited.
+  - You can also rename layers and add new ones.
+- **Edit**: works with the selection.
+  - **Selecting**: in **Select** mode, tap an object, or drag across empty space to select everything inside. Tapping a grouped object selects the whole group. Turn on "Taps add to selection" to build a selection one tap at a time.
+  - **Moving**: drag the selection, nudge it, or move it by an exact distance in mm.
+  - **Group, ungroup, lock, delete.** Locked objects can't be selected; use **Unlock all** to release them.
+  - **Move to layer**: choose a layer, or "(no layer)".
+  - **Ink**: change paths and text to a process ink, an existing spot or a new spot, at any tint.
+  - **Text**: select a text object to edit it. Text added in this app keeps all its settings. For text from the original file, the current wording is filled in, and updating it replaces the text in the same position and angle using the font you pick (the file's own fonts are usually subsets, so they can't take new letters).
+  - **Barcodes**: select a barcode to change its data, magnification, bar height, BWR, ink or tint. Its lower-left corner stays put.
+  - **Page boxes**, plus a one-tap bleed setting.
+- **Text**: add text using a built-in font (Helvetica, Times or Courier families) or your own TTF/OTF font. **Import font** stores it on this iPad. Set the size, line spacing, alignment, ink, tint and position, or place it by tapping the page. Fonts are embedded with only the characters used.
+- **Preflight**: checks for missing fonts, low-resolution and RGB images, RGB colour, hairlines and zero-width lines, small text, bleed, trim box, PDF/X marking and output intent, and total ink coverage. The limits are adjustable. Tap a result to jump to it on the page. Content checks include hidden layers.
 - **Barcode**: EAN-13, UPC-A, EAN-8, GS1-128, Code 128, ITF-14, GS1 DataMatrix, DataMatrix, GS1 QR and QR.
-  - Set the module size, bar height, bar width reduction (BWR), ink and tint.
-  - Place it by typing a position or by tapping the page.
-  - Barcodes are vector artwork with the digits drawn as outlines, so no fonts are needed. Once placed, a barcode can be selected, moved or deleted like any other object.
+  - **Sizing**: set it by **magnification %**. 100% is the standard size (EAN/UPC: 0.33 mm module and 22.85 mm bars), and EAN/UPC are limited to GS1's 80–200%. **Bar height %** truncates the bars.
+  - **Other settings**: BWR in mm, ink and tint. The panel shows the resulting module size and bar height as you type.
+  - The digits are drawn as outlines, so no fonts are needed.
 - **Info**: PDF/X version, output intent, private application data, layers and page boxes.
+
+### How groups and locks are stored
+Groups and locks are stored as invisible tags around each object (PDF marked content). They don't change how anything prints, other programs simply ignore them, and the stacking order of your artwork never changes.
 
 ### Saving
 The original file's bytes are kept exactly, and edits are added after them. Before you save, you see every change compared with the file you opened. Then choose **Save to Files**.
@@ -41,6 +55,8 @@ The original file's bytes are kept exactly, and edits are added after them. Befo
 - Objects inside placed artwork (form XObjects) move and delete as one unit.
 - Images and placed artwork can be moved or deleted, but not recoloured.
 - Paths that also act as clipping paths are locked, because editing them would change other artwork.
+- Groups and locks made in ArtPro+ itself aren't read. This app's own groups and locks work everywhere in this app.
+- A text block uses one font, size and ink throughout.
 - Preflight doesn't yet check white overprint.
 
 ## The test that matters
