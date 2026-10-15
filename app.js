@@ -1,5 +1,6 @@
 // Prepress for iPad: main thread (UI, gestures, compositing).
 import { PROCESS_INKS, FALLBACK_RGB, PT_TO_MM } from "./pdfcore.js";
+import { inkND } from "./trap.js";
 
 const $ = (id) => document.getElementById(id);
 const MAX_PIXELS = 12e6; // stay under iPadOS canvas limits
@@ -9,7 +10,7 @@ const BOX_STYLE = {
 };
 const SVGNS = "http://www.w3.org/2000/svg";
 
-export const APP_VERSION = "4";
+export const APP_VERSION = "5";
 // Updates: check for a new version on every launch and reload into it
 // (unless a file is open, so unsaved work is never lost).
 if ("serviceWorker" in navigator) {
@@ -35,23 +36,24 @@ function rpcWorker(url) {
   const ready = new Promise((r) => (markReady = r));
   w.onmessage = (e) => {
     if (e.data && e.data.ready) return markReady();
-    const { id, result, error } = e.data;
+    const { id, result, error, progress } = e.data;
     if (!waiting.has(id)) return;
+    if (progress) { waiting.get(id).onProgress?.(progress); return; }
     const { res, rej } = waiting.get(id);
     waiting.delete(id);
     error ? rej(new Error(error)) : res(result);
   };
   w.onerror = (e) => { for (const { rej } of waiting.values()) rej(new Error(e.message || "Worker failed to load")); waiting.clear(); };
-  return (payload, transfer = []) => ready.then(() => new Promise((res, rej) => {
+  return (payload, transfer = [], onProgress) => ready.then(() => new Promise((res, rej) => {
     const id = ++seq;
-    waiting.set(id, { res, rej });
+    waiting.set(id, { res, rej, onProgress });
     w.postMessage({ id, ...payload }, transfer);
   }));
 }
 const engine = rpcWorker("engine-worker.js");
 const call = (cmd, args, transfer) => engine({ cmd, args }, transfer);
 let gsCall = null; // Ghostscript worker, created on first use
-const seps = (payload, transfer) => { if (!gsCall) gsCall = rpcWorker("seps-worker.js"); return gsCall(payload, transfer); };
+const seps = (payload, transfer, onProgress) => { if (!gsCall) gsCall = rpcWorker("seps-worker.js"); return gsCall(payload, transfer, onProgress); };
 
 // ------------------------------------------------------------------ state
 const S = {
@@ -94,7 +96,7 @@ function setEdits(n) {
   $("undo").disabled = !S.open || n === 0;
 }
 function enable(on) {
-  for (const id of ["save", "prev", "next", "fit", "seps", "mPan", "mSel", "mMeas", "boxesBtn", "dpi", "covBtn", "pfRun", "bcAdd", "bcTap", "newLayerBtn", "unlockAll", "txTap", "txAdd"]) $(id).disabled = !on;
+  for (const id of ["save", "prev", "next", "fit", "seps", "mPan", "mSel", "mMeas", "boxesBtn", "dpi", "covBtn", "pfRun", "bcAdd", "bcTap", "newLayerBtn", "unlockAll", "txTap", "txAdd", "trPage", "trAll", "trRemove", "scApply", "scPreview"]) $(id).disabled = !on;
   setEdits(S.edits);
 }
 const mm = (pt) => (pt * PT_TO_MM).toFixed(2);
@@ -178,6 +180,7 @@ $("file").addEventListener("change", async (e) => {
     S.layers = await call("layers");
     buildLayers();
     await loadPage(0, true);
+    buildTrapInks(); buildScreens(); buildLinks();
   } catch (err) { oops("Could not open file", err); }
   finally { busy(""); }
 });
@@ -389,7 +392,7 @@ const inkOf = (prefix) => readInk($(prefix + "Ink"), $(prefix + "Name"), $(prefi
 const tintOf = (prefix) => clamp(num(prefix + "Tint", 100), 0, 100);
 
 // ------------------------------------------------------------------ selection
-const selectable = (o) => o && !o.clip && !o.locked && !o.layerLocked && !o.layerHidden;
+const selectable = (o) => o && !o.clip && !o.trap && !o.locked && !o.layerLocked && !o.layerHidden;
 function expandGroups(ks) {
   const out = new Set(ks);
   for (const k of ks) { const g = S.objects[k]?.group; if (g) S.objects.forEach((o) => { if (o.group === g && selectable(o)) out.add(o.k); }); }
@@ -496,6 +499,7 @@ $("undo").onclick = async () => {
     buildLayers();
     busy("");
     await loadPage(r.page ?? S.page, false);
+    buildLinks();
   } catch (err) { oops("Undo", err); }
   finally { busy(""); }
 };
@@ -596,6 +600,234 @@ $("newLayerBtn").onclick = () => {
   if (S.layers.some((l) => l.name === name)) return oops("New layer", new Error("A layer with that name already exists."));
   $("newLayerName").value = "";
   layerEdit({ kind: "newLayer", name });
+};
+
+// ------------------------------------------------------------------ trapping
+const PROCESS = ["Cyan", "Magenta", "Yellow", "Black"];
+// whole words only ("Lack" is German for varnish, but "Black" must trap normally)
+const TRAP_IGNORE = /\b(varnish|lack|lacquer|vernis|white|weiss|weiß|blanc|primer|cutting|cut|cutcontour|die|dieline|diecut|stanz|stanzkontur)\b/i;
+const TRAP_OPAQUE = /\b(silver|gold|metallic|metal|opaque|foil|deckweiss|deckweiß)\b/i;
+S.trapModes = {};
+const trapMode = (n) => S.trapModes[n] || (TRAP_IGNORE.test(n) ? "ignore" : TRAP_OPAQUE.test(n) ? "opaque" : "normal");
+function buildTrapInks() {
+  const names = [...PROCESS, ...S.docInks.filter((n) => !PROCESS.includes(n))];
+  $("trInks").innerHTML = names.map((n) => {
+    const [r, g, b] = inkRGB(n);
+    return `<div class="sc"><span class="nm"><i style="background:rgb(${r},${g},${b})"></i>${esc(n)}</span><span class="d" style="color:var(--dim);font-size:12px">ND ${inkND(n, inkRGB(n)).toFixed(2)}</span>
+      <select data-ink="${esc(n)}" style="grid-column:span 2"><option value="normal">Normal</option><option value="opaque">Opaque</option><option value="ignore">Ignore</option></select></div>`;
+  }).join("");
+  $("trInks").querySelectorAll("select").forEach((sel) => { sel.value = trapMode(sel.dataset.ink); sel.onchange = () => { S.trapModes[sel.dataset.ink] = sel.value; }; });
+}
+async function trapPage(i, label) {
+  const info = await call("page", { i });
+  const mb = info.boxes.MediaBox;
+  const wMM = Math.max(0.01, num("trW", 0.1)), bMM = Math.max(wMM, num("trB", 0.2)), step = clamp(num("trStep", 10), 1, 100);
+  // resolution: the trap width is an exact whole number of pixels (at least 3)
+  let dpi = Math.min(2400, Math.max(600, Math.ceil(3 / (wMM / 25.4))));
+  const area = ((mb[2] - mb[0]) / 72) * ((mb[3] - mb[1]) / 72);
+  if (area * dpi * dpi > 600e6) dpi = Math.floor(Math.sqrt(600e6 / area));
+  const k = 72 / dpi, W = Math.ceil((mb[2] - mb[0]) / k), H = Math.ceil((mb[3] - mb[1]) / k);
+  const r = (wMM / 25.4) * dpi, rB = (bMM / 25.4) * dpi, M = Math.ceil(rB) + 3, T = 2048;
+  // overview at 72 dpi (PostScript fill rules draw even hairlines) to skip tiles without colour edges
+  busy(`${label}: looking for colour edges…`);
+  const ov = await getPlates(i, 72);
+  const uniform = (x0, y0, x1, y1) => {
+    const a = Math.max(0, Math.floor(x0 * k) - 2), b = Math.max(0, Math.floor(y0 * k) - 2);
+    const c = Math.min(ov.w, Math.ceil(x1 * k) + 2), d = Math.min(ov.h, Math.ceil(y1 * k) + 2);
+    for (const pl of ov.data) { const v = pl[b * ov.w + a]; for (let y = b; y < d; y++) for (let x = a; x < c; x++) if (pl[y * ov.w + x] !== v) return false; }
+    return true;
+  };
+  const tiles = [];
+  for (let ty = 0; ty < H; ty += T) for (let tx = 0; tx < W; tx += T) {
+    const c = [tx, ty, Math.min(W, tx + T), Math.min(H, ty + T)];
+    if (uniform(...c)) continue;
+    const p = [Math.max(0, c[0] - M), Math.max(0, c[1] - M), Math.min(W, c[2] + M), Math.min(H, c[3] + M)];
+    tiles.push({ rect: [mb[0] + p[0] * k, mb[3] - p[3] * k, mb[0] + p[2] * k, mb[3] - p[1] * k], core: [c[0] - p[0], c[1] - p[1], c[2] - p[0], c[3] - p[1]] });
+  }
+  const spots = info.spots;
+  const rgb = (n) => PROCESS_INKS[n] || spots[n] || FALLBACK_RGB;
+  const inks = Object.fromEntries(ov.names.map((n) => [n, { nd: inkND(n, rgb(n)), mode: trapMode(n) }]));
+  let groups = {};
+  if (tiles.length) {
+    const objs = i === S.page ? S.objects : await call("objects", { i });
+    const excl = $("trImg").checked ? [] : objs.filter((o) => o.type === "image").map((o) => o.bbox);
+    busy(`${label}: preparing ${tiles.length} tile${tiles.length > 1 ? "s" : ""} at ${dpi} dpi…`);
+    const td = await call("trapTiles", { i, rects: tiles.map((t) => t.rect) });
+    const bytes = new Uint8Array(td.bytes);
+    groups = await seps({ cmd: "trap", bytes: bytes.buffer, dpi, inks, opt: { r, rBlack: rB, step: step * 2.55, excl },
+      tiles: tiles.map((t, j) => ({ page: td.first + j, rect: t.rect, core: t.core })) }, [bytes.buffer], (m) => busy(`${label}: ${m.toLowerCase()}`));
+    S.gsVer = -1; // the separation engine now holds the tile document
+  }
+  const res = await call("traps", { i, groups });
+  return { res, dpi, count: Object.keys(groups).length, inks: [...new Set(Object.keys(groups).map((g) => g.slice(0, g.lastIndexOf("|"))))] };
+}
+async function runTrap(pages) {
+  const lines = [];
+  try {
+    for (const i of pages) {
+      const r = await trapPage(i, pages.length > 1 ? `Page ${i + 1} of ${S.pages}` : "Trapping");
+      setEdits(r.res.edits);
+      S.layers = r.res.layers;
+      if (i === S.page) S.objects = r.res.objects;
+      lines.push(`Page ${i + 1}: ${r.count ? `${r.count} trap object${r.count > 1 ? "s" : ""} (${r.inks.join(", ")})` : "no traps needed"} · ${r.dpi} dpi`);
+    }
+    S.ver++;
+    buildLayers();
+    busy("");
+    await render(false);
+    buildSelCard();
+    $("trOut").innerHTML = `<div class="card"><div class="t good">Trapping done</div><div class="s">${lines.map(esc).join("<br>")}</div><div class="hint">Turn on Separations to inspect them, or hide the Traps layer to compare.</div></div>`;
+  } catch (err) { busy(""); oops("Trapping", err); }
+}
+$("trPage").onclick = () => runTrap([S.page]);
+$("trAll").onclick = () => runTrap([...Array(S.pages).keys()]);
+$("trRemove").onclick = async () => {
+  busy("Removing traps…");
+  try {
+    const r = await call("removeTraps", { i: S.page });
+    S.objects = r.objects; S.ver++; setEdits(r.edits);
+    busy("");
+    await render(false);
+    $("trOut").innerHTML = `<div class="hint">Traps removed from page ${S.page + 1}.</div>`;
+  } catch (err) { busy(""); oops("Traps", err); }
+};
+
+// ------------------------------------------------------------------ links (images and scans)
+let relinkTarget = null;
+async function buildLinks() {
+  const box = $("linkList");
+  if (!S.open) return;
+  let r;
+  try { r = await call("images"); } catch (err) { box.innerHTML = `<div class="hint">${esc(err.message)}</div>`; return; }
+  S.links = r;
+  if (!r.images.length && !r.inline.length) { box.innerHTML = `<div class="hint">No images in this file.</div>`; return; }
+  const minPPI = num("pfPPI", 250);
+  box.innerHTML = r.images.map((im, n) => `<div class="link" data-n="${n}">
+      <div class="top"><canvas width="1" height="1"></canvas><div style="flex:1;min-width:0">
+        <div class="t">Image /${esc(im.name)}</div>
+        <div class="meta">${im.w} × ${im.h} px · ${esc(im.cs)} · ${im.pending ? "new, compressed when saved" : `${esc(im.filter)} · ${im.kb} KB`}${im.alpha ? " · transparency" : ""}</div>
+        ${im.placements.map((p) => `<div class="pl ${p.ppi < minPPI ? "low" : ""}">Page ${p.page + 1} · ${p.mmW} × ${p.mmH} mm · ${p.ppi} ppi${p.nested ? " · inside artwork" : ""}</div>`).join("")}
+      </div></div>
+      <div class="row"><button class="show">Show</button><button class="rel">Relink…</button><button class="rem danger">Remove</button></div></div>`).join("") +
+    r.inline.map((im, n) => `<div class="link" data-inline="${n}"><div class="t">Inline image</div><div class="meta">Page ${im.page + 1} · stored inside the page content</div>
+      <div class="row"><button class="show">Show</button><button class="rem danger">Remove</button></div></div>`).join("");
+  box.querySelectorAll(".link").forEach((el) => {
+    const im = el.dataset.n !== undefined ? r.images[+el.dataset.n] : null;
+    const inl = el.dataset.inline !== undefined ? r.inline[+el.dataset.inline] : null;
+    const first = im ? im.placements[0] : inl;
+    el.querySelector(".show").onclick = async () => {
+      if (first.page !== S.page) await loadPage(first.page, false);
+      if (first.k !== null && first.k !== undefined && selectable(S.objects[first.k])) { setMode("select"); setSelection([first.k]); }
+      S.highlights = [{ page: first.page, rect: first.bbox }];
+      drawOverlay();
+      zoomTo(first.bbox);
+    };
+    el.querySelector(".rem").onclick = () => dialog("Remove image", `<p>Remove this image from ${im ? `all ${im.placements.length} placement${im.placements.length > 1 ? "s" : ""}` : "the page"}? You can undo this.</p>`,
+      [["Cancel"], ["Remove", async () => {
+        busy("Removing…");
+        try {
+          const res = im ? await call("removeImage", { objnum: im.objnum }) : await call("edit", { i: inl.page, objs: [inl.k], action: "delete" });
+          await afterLinks(res);
+        } catch (err) { busy(""); oops("Remove", err); }
+      }, "danger"]]);
+    if (im) el.querySelector(".rel").onclick = () => { relinkTarget = im; $("lkFile").click(); };
+  });
+  // thumbnails, one at a time
+  for (const el of box.querySelectorAll(".link")) {
+    const im = el.dataset.n !== undefined ? r.images[+el.dataset.n] : r.inline[+el.dataset.inline];
+    const p = im.placements ? im.placements[0] : im;
+    try {
+      const t = await call("thumb", { i: p.page, bbox: p.bbox, size: 128 });
+      const c = el.querySelector("canvas");
+      if (!c) continue;
+      c.width = t.w; c.height = t.h;
+      c.getContext("2d").putImageData(new ImageData(t.rgba, t.w, t.h), 0, 0);
+    } catch {}
+  }
+}
+async function afterLinks(res) {
+  S.ver++;
+  setEdits(res.edits);
+  if (res.inks) S.docInks = res.inks;
+  busy("");
+  await loadPage(S.page, false);
+  buildLinks();
+}
+$("lkFile").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f || !relinkTarget) return;
+  busy("Relinking " + f.name + "…");
+  try {
+    const data = await f.arrayBuffer();
+    const res = await call("relink", { objnum: relinkTarget.objnum, data, mode: $("lkMode").value }, [data]);
+    await afterLinks(res);
+  } catch (err) { busy(""); oops("Relink", new Error(`${f.name} could not be used: ${err.message}. Use JPEG, TIFF, PNG or PSD.`)); }
+});
+
+// ------------------------------------------------------------------ screening
+const SCREEN_DEFAULTS = { Default: [150, 45], Cyan: [150, 15], Magenta: [150, 75], Yellow: [150, 0], Black: [150, 45] };
+async function buildScreens() {
+  if (!S.open) return;
+  const r = await call("screens");
+  S.shapes = r.shapes;
+  const names = ["Default", ...PROCESS, ...S.docInks.filter((n) => !PROCESS.includes(n))];
+  $("scTable").innerHTML = `<div class="sc boxhead"><span>Ink</span><span>lpi</span><span>Angle °</span><span>Dot</span></div>` + names.map((n) => {
+    const cur = r.settings[n] || { lpi: (SCREEN_DEFAULTS[n] || [150, 45])[0], angle: (SCREEN_DEFAULTS[n] || [150, 45])[1], shape: "Round" };
+    const [cr, cg, cb] = n === "Default" ? [120, 120, 120] : inkRGB(n);
+    return `<div class="sc" data-ink="${esc(n)}"><span class="nm"><i style="background:rgb(${cr},${cg},${cb})"></i>${n === "Default" ? "Others" : esc(n)}</span>
+      <input class="lpi" inputmode="decimal" value="${cur.lpi}"><input class="ang" inputmode="decimal" value="${cur.angle}">
+      <select class="shp">${S.shapes.map((sh) => `<option ${sh === cur.shape ? "selected" : ""}>${sh}</option>`).join("")}</select></div>`;
+  }).join("");
+}
+function screenSettings() {
+  const out = {};
+  for (const row of $("scTable").querySelectorAll(".sc[data-ink]")) {
+    const lpi = num(row.querySelector(".lpi"), 0), ang = num(row.querySelector(".ang"), 0);
+    if (!(lpi >= 10 && lpi <= 600)) throw new Error(`${row.dataset.ink}: ruling must be between 10 and 600 lpi.`);
+    out[row.dataset.ink] = { lpi, angle: ((ang % 360) + 360) % 360, shape: row.querySelector(".shp").value };
+  }
+  return out;
+}
+$("scApply").onclick = async () => {
+  let settings;
+  try { settings = screenSettings(); } catch (e) { return oops("Screens", e); }
+  busy("Applying screens…");
+  try {
+    const r = await call("applyScreens", { settings });
+    S.ver++; setEdits(r.edits); $("report").textContent = `App version ${APP_VERSION}\n\n` + r.report.join("\n");
+    busy("");
+    dialog("Screens applied", "<p>Ruling, angle and dot shape are now stored in the file for every ink. Use <b>Dot preview</b> to check them.</p>", [["OK"]]);
+  } catch (err) { busy(""); oops("Screens", err); }
+};
+$("scPreview").onclick = async () => {
+  let settings;
+  try { settings = screenSettings(); } catch (e) { return oops("Screens", e); }
+  const st = stage.getBoundingClientRect(), c = toPt(toImg({ x: st.width / 2, y: st.height / 2 }));
+  const half = 3 / PT_TO_MM;
+  const rect = [c.x - half, c.y - half, c.x + half, c.y + half];
+  const spots = [...new Set([...Object.keys(S.spots), ...S.docInks])].filter((n) => !PROCESS.includes(n));
+  busy("Rendering dots…");
+  try {
+    const docs = await call("dotDocs", { i: S.page, rect, settings, spots });
+    const renders = docs.map((d) => ({ bytes: d.bytes.buffer || d.bytes, inks: d.inks }));
+    const r = await seps({ cmd: "dots", renders, dpi: 2400 }, renders.map((x) => x.bytes));
+    S.gsVer = -1;
+    const cv = $("scCanvas");
+    cv.width = r.w; cv.height = r.h; cv.style.display = "block";
+    const img = new ImageData(r.w, r.h), d = img.data, n = r.w * r.h;
+    const acc = new Float32Array(n * 3).fill(1);
+    r.names.forEach((name, k) => {
+      const [cr, cg, cb] = inkRGB(name), pl = r.data[k];
+      for (let i = 0, j = 0; i < n; i++, j += 3) if (pl[i]) { acc[j] *= cr / 255; acc[j + 1] *= cg / 255; acc[j + 2] *= cb / 255; }
+    });
+    for (let i = 0, j = 0, q = 0; i < n; i++, j += 3) { d[q++] = acc[j] * 255; d[q++] = acc[j + 1] * 255; d[q++] = acc[j + 2] * 255; d[q++] = 255; }
+    cv.getContext("2d").putImageData(img, 0, 0);
+    S.highlights = [{ page: S.page, rect }];
+    drawOverlay();
+    $("scInfo").textContent = "Preview of the orange-outlined 6 × 6 mm area at the centre of the view, 2400 dpi. Solids show as solid; pan to a tint or vignette to see dots. Your RIP or platesetter may use its own screening; check with your repro house.";
+  } catch (err) { oops("Dot preview", err); }
+  finally { busy(""); }
 };
 
 // ------------------------------------------------------------------ page boxes
@@ -807,7 +1039,7 @@ function setMode(m) {
 $("mPan").onclick = () => setMode("pan");
 $("mSel").onclick = () => setMode("select");
 $("mMeas").onclick = () => setMode("measure");
-const TABS = ["inks", "layers", "edit", "text", "pre", "bc", "info"];
+const TABS = ["inks", "layers", "edit", "text", "links", "trap", "screens", "pre", "bc", "info"];
 function showTab(name, force) {
   document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   for (const t of TABS) $("tab-" + t).hidden = t !== name;

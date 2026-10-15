@@ -38,6 +38,21 @@ The website only delivers the app's code. Files you open are processed on the iP
   - **Barcodes**: select a barcode to change its data, magnification, bar height, BWR, ink or tint. Its lower-left corner stays put.
   - **Page boxes**, plus a one-tap bleed setting.
 - **Text**: add text using a built-in font (Helvetica, Times or Courier families) or your own TTF/OTF font. **Import font** stores it on this iPad. Set the size, line spacing, alignment, ink, tint and position, or place it by tapping the page. Fonts are embedded with only the characters used.
+- **Links**: every image and scan in the file.
+  - For each one: thumbnail, pixel size, colour (CMYK, RGB, Grey, ICC, spot or DeviceN), compression, and every placement with its page, size in mm and effective ppi. Low ppi is highlighted.
+  - **Show** jumps to the image.
+  - **Relink…** replaces it with a file from Files, iCloud or a drive (JPEG, TIFF, PNG or PSD) in every placement. Choose **Fit proportionally** or **Fill the frame**. CMYK stays CMYK, a JPEG stays a JPEG, and new data is compressed when you save.
+  - **Remove** deletes it everywhere.
+- **Trap**: automatic trapping, following ArtPro+'s rules.
+  - Where two colours meet and misregistration could show paper (each has ink the other lacks, by more than the **step limit**), the lighter colour, by neutral density, spreads into the darker one by the **trap width**. Anything with solid black uses the **black width**.
+  - Per ink you can choose **Normal**, **Opaque** (metallics and foils: other inks spread under them) or **Ignore** (varnish, white, cutter lines). These are pre-set from the ink names.
+  - Images are left alone unless **Trap images** is on.
+  - Traps are overprinting vector objects, one per ink, on a **Traps** layer. Hide the layer to compare, run trapping again to replace them, or use **Remove traps**.
+  - It works from true separations, rendered in tiles at a resolution where the trap width is a whole number of pixels (0.1 mm becomes 3 px at 762 dpi). Trap edges are accurate to one pixel at that resolution.
+- **Screens**: ruling (lpi), angle and dot shape (Round, Ellipse, EllipseC, Square, Diamond, Line, Cross) for every ink, with "Others" as the default.
+  - **Apply to document** stores them as standard PDF screening.
+  - **Dot preview** renders the 6 × 6 mm area at the centre of the view as real halftone dots at 2400 dpi.
+  - Many RIPs and platesetters apply their own screening and ignore the screening in the PDF, so confirm with your repro house which settings win.
 - **Preflight**: checks for missing fonts, low-resolution and RGB images, RGB colour, hairlines and zero-width lines, small text, bleed, trim box, PDF/X marking and output intent, and total ink coverage. The limits are adjustable. Tap a result to jump to it on the page. Content checks include hidden layers.
 - **Barcode**: EAN-13, UPC-A, EAN-8, GS1-128, Code 128, ITF-14, GS1 DataMatrix, DataMatrix, GS1 QR and QR.
   - **Sizing**: set it by **magnification %**. 100% is the standard size (EAN/UPC: 0.33 mm module and 22.85 mm bars), and EAN/UPC are limited to GS1's 80–200%. **Bar height %** truncates the bars.
@@ -58,6 +73,8 @@ The original file's bytes are kept exactly, and edits are added after them. Befo
 - Groups and locks made in ArtPro+ itself aren't read. This app's own groups and locks work everywhere in this app.
 - A text block uses one font, size and ink throughout.
 - Preflight doesn't yet check white overprint.
+- Trapping has no pullbacks, keep-aways or centre traps yet, and traps against gradients and images are kept simple.
+- In the dot preview, each spot ink is rendered with its own screen as the only screen, which works around a limitation of the built-in renderer. The file itself stores the proper per-ink screening.
 
 ## The test that matters
 Export real jobs from ArtPro+. Open them here, change a box, save, then open the result in ArtPro+ again to confirm everything is intact.

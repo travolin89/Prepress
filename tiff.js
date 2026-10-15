@@ -15,15 +15,22 @@ export function plateFromTiff(buf) {
   }
   const w = tags[256][0], h = tags[257][0];
   if ((tags[259]?.[0] ?? 1) !== 1) throw new Error("Compressed TIFF plate not supported");
-  if ((tags[258]?.[0] ?? 1) !== 8) throw new Error("Plate is not 8-bit");
+  const bps = tags[258]?.[0] ?? 1;
+  if (bps !== 8 && bps !== 1) throw new Error("Unsupported plate bit depth " + bps);
   const blackIsZero = (tags[262]?.[0] ?? 1) === 1; // film look: dark = ink
-  const out = new Uint8Array(w * h);
+  const stride = bps === 8 ? w : Math.ceil(w / 8);
+  const raw = new Uint8Array(stride * h);
   let p = 0;
   tags[273].forEach((off, s) => {
-    const len = Math.min(tags[279][s], out.length - p);
-    out.set(new Uint8Array(buf.buffer, buf.byteOffset + off, len), p);
+    const len = Math.min(tags[279][s], raw.length - p);
+    raw.set(new Uint8Array(buf.buffer, buf.byteOffset + off, len), p);
     p += len;
   });
+  let out = raw;
+  if (bps === 1) { // halftone dots: expand to 0/255
+    out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) out[y * w + x] = (raw[y * stride + (x >> 3)] >> (7 - (x & 7))) & 1 ? 255 : 0;
+  }
   if (blackIsZero) for (let i = 0; i < out.length; i++) out[i] = 255 - out[i];
   return { w, h, data: out };
 }

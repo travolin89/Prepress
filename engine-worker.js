@@ -12,6 +12,7 @@ let baseline = null; // bytes exactly as first opened
 let current = null;  // bytes of the latest saved state
 let log = [];        // edits since the last save
 const viewState = new Map(); // layer id -> visible (view only, never saved)
+const relinked = new Set();  // image objects added by relinking (compressed when saved)
 const fontData = new Map();  // imported font id -> bytes
 export const BUILTIN_FONTS = ["Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Helvetica-BoldOblique", "Times-Roman", "Times-Bold", "Times-Italic", "Times-BoldItalic", "Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique"];
 
@@ -75,8 +76,8 @@ function fontInfo(fd) {
   return { twoByte: false, width: (c) => (widths ? (widths[c - first] ?? missing) * k : 500) || 500 };
 }
 
-function contextFor(pg) {
-  const res = pg.getInheritable("Resources");
+function contextFor(pg) { return contextForRes(pg.getInheritable("Resources")); }
+function contextForRes(res) {
   const cache = new Map();
   const get = (key, name) => (has(res) ? res.get(key, name) : null);
   return {
@@ -233,6 +234,11 @@ function applyOp(d, op) {
   if (op.kind === "renameLayer") { const g = ocgById(d, op.id); if (!g) throw new Error("Layer not found"); g.put("Name", d.newString(op.name)); return; }
   if (op.kind === "lockLayer") return lockLayer(d, op.id, op.locked);
   if (op.kind === "addText" || op.kind === "replaceText") return textOp(d, op);
+  if (op.kind === "traps") return writeTraps(d, op);
+  if (op.kind === "removeTraps") return removeTraps(d, op.i);
+  if (op.kind === "relink") return relinkImage(d, op);
+  if (op.kind === "removeImage") return removeImage(d, op.objnum);
+  if (op.kind === "screens") return applyScreens(d, op.settings);
   throw new Error("Unknown edit");
 }
 
@@ -508,6 +514,250 @@ function subsetOurFonts(d) {
   }
 }
 
+// ------------------------------------------------------------------ trapping
+function removeTraps(d, i) {
+  const pg = pageObj(d, i);
+  let cur = parsePage(pg, readContent(pg));
+  const ks = cur.objs.map((o, k) => (o.wrap && o.wrap.props.Trap ? k : -1)).filter((k) => k >= 0);
+  if (!ks.length) return;
+  for (const k of ks.sort((a, b) => b - a)) cur = parsePage(pg, editContent(cur.s, cur.ops, cur.objs, { action: "delete", obj: k }));
+  writeContent(d, pg, cur.s.replace(/\/OC \/PPL\d+ BDC\s*EMC\s*/g, ""));
+}
+function writeTraps(d, op) {
+  removeTraps(d, op.i);
+  const keys = Object.keys(op.groups);
+  if (!keys.length) return;
+  let layer = listLayers(d).find((l) => l.name === op.layerName);
+  if (!layer) { newLayer(d, op.layerName); layer = listLayers(d).find((l) => l.name === op.layerName); }
+  const pg = pageObj(d, op.i);
+  const res = resForOcg(d, pg, layer.id);
+  const gsd = subDict(d, ensureRes(d, pg), "ExtGState");
+  if (!has(gsd.get("PPTrapGS"))) {
+    const g = d.newDictionary();
+    g.put("Type", d.newName("ExtGState")); g.put("OP", true); g.put("op", true); g.put("OPM", 1);
+    gsd.put("PPTrapGS", g);
+  }
+  let block = `/OC /${res} BDC\n`;
+  for (const key of keys.sort()) {
+    const bar = key.lastIndexOf("|"), ink = key.slice(0, bar), v = +key.slice(bar + 1);
+    const t = +(v / 255).toFixed(4);
+    let colour;
+    if (ink in PROCESS) { const c = [0, 0, 0, 0]; c[PROCESS[ink]] = t; colour = `${c.join(" ")} k`; }
+    else colour = colourOps(d, pg, { name: ink }, t * 100).split(" /")[0];
+    const paths = op.groups[key].map((L) => {
+      let s = `${L[0]} ${L[1]} m`;
+      for (let j = 2; j < L.length; j += 2) s += ` ${L[j]} ${L[j + 1]} l`;
+      return s + " h";
+    }).join("\n");
+    block += `/PPObj ${propsToPdf({ Trap: 1, Ink: ink, V: v })} BDC\nq /PPTrapGS gs ${colour}\n${paths}\nf*\nQ\nEMC\n`;
+  }
+  block += "EMC";
+  const cur = parsePage(pg, readContent(pg));
+  writeContent(d, pg, appendBlock(cur.s, cur.ops, block));
+}
+// A throwaway copy of the document with extra pages that show only part of
+// page i (same content, smaller media box), for tiled high-resolution renders.
+function tileDoc(i, rects, opts = {}) {
+  const d = fresh();
+  if (opts.withoutTraps) removeTraps(d, i);
+  if (opts.screens) applyScreens(d, opts.screens);
+  const src = pageObj(d, i);
+  const first = d.countPages();
+  const contents = deepCopy(d, src.get("Contents")), res = deepCopy(d, src.getInheritable("Resources"));
+  const group = src.get("Group");
+  const made = [];
+  for (const r of rects) {
+    const pd = d.newDictionary();
+    pd.put("Type", d.newName("Page")); pd.put("MediaBox", r.map((v) => +v.toFixed(4)));
+    pd.put("Contents", contents); pd.put("Resources", res);
+    if (has(group)) pd.put("Group", deepCopy(d, group));
+    made.push(pd);
+  }
+  if (opts.atStart) made.reverse().forEach((pd) => d.insertPage(0, d.addObject(pd)));
+  else made.forEach((pd) => d.insertPage(-1, d.addObject(pd)));
+  return { d, first: opts.atStart ? 0 : first };
+}
+
+// ------------------------------------------------------------------ images (links)
+function forEachResDict(d, fn) {
+  const seen = new Set();
+  const walk = (res) => {
+    if (!has(res) || !res.isDictionary()) return;
+    if (res.isIndirect()) { if (seen.has(res.asIndirect())) return; seen.add(res.asIndirect()); }
+    fn(res);
+    const xo = res.get("XObject");
+    if (has(xo)) xo.forEach((x) => { if (has(x.get("Resources"))) walk(x.get("Resources")); });
+    const pats = res.get("Pattern");
+    if (has(pats)) pats.forEach((p) => { if (has(p.get("Resources"))) walk(p.get("Resources")); });
+  };
+  for (let i = 0; i < d.countPages(); i++) walk(pageObj(d, i).getInheritable("Resources"));
+}
+const unitBox = (m) => {
+  const pts = [[0, 0], [1, 0], [0, 1], [1, 1]].map(([x, y]) => [x * m[0] + y * m[2] + m[4], x * m[1] + y * m[3] + m[5]]);
+  return [Math.min(...pts.map((p) => p[0])), Math.min(...pts.map((p) => p[1])), Math.max(...pts.map((p) => p[0])), Math.max(...pts.map((p) => p[1]))];
+};
+// every image placement on a page, including inside placed artwork
+function placements(d, i) {
+  const out = [];
+  const { pg, objs } = pageObjects(d, i);
+  const res = pg.getInheritable("Resources");
+  const visit = (objs, res, outer, depth, pageLevel) => {
+    objs.forEach((o, k) => {
+      const ctm = mul(o.ctm, outer);
+      if (o.type === "image") {
+        if (!o.xname) { if (pageLevel) out.push({ inline: true, k, ctm, nested: false }); return; }
+        const x = res.get("XObject", o.xname);
+        if (has(x) && x.isIndirect()) out.push({ objnum: x.asIndirect(), name: o.xname, ctm, k: pageLevel ? k : null, nested: !pageLevel });
+      } else if (o.type === "form" && depth < 8) {
+        const f = res.get("XObject", o.xname);
+        if (!has(f) || !f.isStream()) return;
+        const fm = has(f.get("Matrix")) ? nums(f.get("Matrix")) : IDENT;
+        const sub = findObjects(parseOps(bytesToStr(f.readStream().asUint8Array())), contextForRes(f.get("Resources")));
+        visit(sub, f.get("Resources"), mul(fm, ctm), depth + 1, false);
+      }
+    });
+  };
+  visit(objs, res, IDENT, 0, true);
+  return out;
+}
+const FILTER_NAMES = { DCTDecode: "JPEG", JPXDecode: "JPEG 2000", FlateDecode: "ZIP", LZWDecode: "LZW", CCITTFaxDecode: "Fax", JBIG2Decode: "JBIG2", RunLengthDecode: "RLE" };
+function csLabel(cs) {
+  if (!has(cs)) return "Mask";
+  if (cs.isName()) return { DeviceCMYK: "CMYK", DeviceRGB: "RGB", DeviceGray: "Grey" }[cs.asName()] || cs.asName();
+  const fam = cs.get(0).asName();
+  if (fam === "ICCBased") return `ICC ${{ 1: "Grey", 3: "RGB", 4: "CMYK" }[cs.get(1).get("N").asNumber()] || ""}`;
+  if (fam === "Separation") return `Spot: ${cs.get(1).asName()}`;
+  if (fam === "DeviceN") { const n = []; for (let k = 0; k < cs.get(1).length; k++) n.push(cs.get(1).get(k).asName()); return `DeviceN: ${n.join(", ")}`; }
+  if (fam === "Indexed") return `Indexed ${csLabel(cs.get(1))}`;
+  return fam;
+}
+function imageList() {
+  const byObj = new Map(), inline = [];
+  for (let i = 0; i < doc.countPages(); i++) {
+    for (const p of placements(doc, i)) {
+      const box = unitBox(p.ctm), wpt = Math.hypot(p.ctm[0], p.ctm[1]), hpt = Math.hypot(p.ctm[2], p.ctm[3]);
+      if (p.inline) { inline.push({ page: i, k: p.k, bbox: box }); continue; }
+      let e = byObj.get(p.objnum);
+      if (!e) {
+        const x = doc.newIndirect(p.objnum);
+        const f = x.get("Filter");
+        const filt = !has(f) ? "Uncompressed" : f.isArray() ? [...Array(f.length).keys()].map((j) => FILTER_NAMES[f.get(j).asName()] || f.get(j).asName()).join("+") : FILTER_NAMES[f.asName()] || f.asName();
+        e = {
+          objnum: p.objnum, name: p.name, w: numOr(x.get("Width"), 0), h: numOr(x.get("Height"), 0), bpc: numOr(x.get("BitsPerComponent"), 1),
+          cs: has(x.get("ImageMask")) && x.get("ImageMask").asBoolean() ? "Mask" : csLabel(x.get("ColorSpace")), filter: filt,
+          alpha: has(x.get("SMask")), kb: Math.round(x.readRawStream().asUint8Array().length / 1024), placements: [], pending: relinked.has(p.objnum),
+        };
+        byObj.set(p.objnum, e);
+      }
+      const ppi = Math.min(e.w / (wpt / 72 || 1), e.h / (hpt / 72 || 1));
+      e.placements.push({ page: i, k: p.k, nested: p.nested, bbox: box, ppi: Math.round(ppi), mmW: +(wpt * core.PT_TO_MM).toFixed(2), mmH: +(hpt * core.PT_TO_MM).toFixed(2) });
+    }
+  }
+  return { images: [...byObj.values()], inline };
+}
+function relinkImage(d, op) {
+  const img = new mupdf.Image(new Uint8Array(op.data));
+  const ref = d.addImage(img);
+  relinked.add(ref.asIndirect());
+  forEachResDict(d, (res) => {
+    const xo = res.get("XObject");
+    if (has(xo)) xo.forEach((v, k) => { if (v.isIndirect() && v.asIndirect() === op.objnum) xo.put(k, ref); });
+  });
+  if (op.mode !== "fit") return;
+  const ia = img.getWidth() / img.getHeight();
+  for (let i = 0; i < d.countPages(); i++) {
+    const pg = pageObj(d, i);
+    let cur = parsePage(pg, readContent(pg));
+    const res = pg.getInheritable("Resources");
+    const ks = cur.objs.map((o, k) => (o.type === "image" && o.xname && has(res.get("XObject", o.xname)) && res.get("XObject", o.xname).asIndirect() === ref.asIndirect() ? k : -1)).filter((k) => k >= 0);
+    if (!ks.length) continue;
+    for (const k of ks.sort((a, b) => b - a)) {
+      const o = cur.objs[k], fa = Math.hypot(o.ctm[0], o.ctm[1]) / (Math.hypot(o.ctm[2], o.ctm[3]) || 1);
+      const [sx, sy] = ia > fa ? [1, fa / ia] : [ia / fa, 1];
+      const m = `${+sx.toFixed(5)} 0 0 ${+sy.toFixed(5)} ${+((1 - sx) / 2).toFixed(5)} ${+((1 - sy) / 2).toFixed(5)}`;
+      const s2 = cur.s.slice(0, cur.ops[o.a].s) + `q ${m} cm /${o.xname} Do Q` + cur.s.slice(cur.ops[o.a].e);
+      cur = parsePage(pg, s2);
+    }
+    writeContent(d, pg, cur.s);
+  }
+}
+function removeImage(d, objnum) {
+  let empty = null;
+  for (let i = 0; i < d.countPages(); i++) {
+    const pg = pageObj(d, i);
+    let cur = parsePage(pg, readContent(pg));
+    const res = pg.getInheritable("Resources");
+    const ks = cur.objs.map((o, k) => (o.type === "image" && o.xname && has(res.get("XObject", o.xname)) && res.get("XObject", o.xname).asIndirect() === objnum ? k : -1)).filter((k) => k >= 0);
+    for (const k of ks.sort((a, b) => b - a)) cur = parsePage(pg, editContent(cur.s, cur.ops, cur.objs, { action: "delete", obj: k }));
+    if (ks.length) writeContent(d, pg, cur.s);
+  }
+  // placements inside placed artwork: point them at an empty form instead
+  forEachResDict(d, (res) => {
+    const xo = res.get("XObject");
+    if (!has(xo)) return;
+    xo.forEach((v, k) => {
+      if (!(v.isIndirect() && v.asIndirect() === objnum)) return;
+      if (!empty) {
+        const dict = d.newDictionary();
+        dict.put("Type", d.newName("XObject")); dict.put("Subtype", d.newName("Form")); dict.put("BBox", [0, 0, 0, 0]);
+        empty = d.addStream(new Uint8Array(0), dict);
+      }
+      xo.put(k, empty);
+    });
+  });
+}
+
+// ------------------------------------------------------------------ screening
+export const DOT_SHAPES = ["Round", "Ellipse", "EllipseC", "Square", "Diamond", "Line", "Cross"];
+function ht1(d, s) {
+  const h = d.newDictionary();
+  h.put("Type", d.newName("Halftone")); h.put("HalftoneType", 1);
+  h.put("Frequency", +s.lpi); h.put("Angle", +s.angle); h.put("SpotFunction", d.newName(s.shape || "Round"));
+  return h;
+}
+// settings: { Default: {lpi, angle, shape}, <ink>: {...} }
+function applyScreens(d, settings, onlyInk) {
+  const root = d.getTrailer().get("Root");
+  let ht;
+  if (onlyInk) ht = ht1(d, settings[onlyInk]); // preview of one spot ink
+  else {
+    ht = d.newDictionary();
+    ht.put("Type", d.newName("Halftone")); ht.put("HalftoneType", 5);
+    ht.put("Default", ht1(d, settings.Default));
+    for (const [ink, s] of Object.entries(settings)) if (ink !== "Default") ht.put(ink, ht1(d, s));
+    const rec = d.newDictionary();
+    for (const [ink, s] of Object.entries(settings)) rec.put(ink, [+s.lpi, +s.angle, d.newName(s.shape || "Round")]);
+    root.put("PPScreening", rec);
+  }
+  const gs = d.newDictionary();
+  gs.put("Type", d.newName("ExtGState")); gs.put("HT", ht);
+  const gsRef = d.addObject(gs);
+  for (let i = 0; i < d.countPages(); i++) {
+    const pg = pageObj(d, i);
+    subDict(d, ensureRes(d, pg), "ExtGState").put("PPHT", gsRef);
+    const s = readContent(pg), ops = parseOps(s);
+    if (!(ops[0] && ops[0].op === "gs" && ops[0].args[0] && ops[0].args[0].name === "PPHT")) writeContent(d, pg, "/PPHT gs\n" + s);
+  }
+}
+function readScreens() {
+  const rec = doc.getTrailer().get("Root").get("PPScreening");
+  const out = {};
+  if (has(rec)) rec.forEach((v, k) => { out[k] = { lpi: v.get(0).asNumber(), angle: v.get(1).asNumber(), shape: v.get(2).asName() }; });
+  else {
+    // fall back to halftones already in the file (first page)
+    const gsd = pageObj(doc, 0).getInheritable("Resources").get("ExtGState");
+    const one = (h) => ({ lpi: numOr(h.get("Frequency"), 150), angle: numOr(h.get("Angle"), 45), shape: has(h.get("SpotFunction")) && h.get("SpotFunction").isName() ? h.get("SpotFunction").asName() : "Round" });
+    if (has(gsd)) gsd.forEach((g) => {
+      const h = g.isDictionary() ? g.get("HT") : null;
+      if (!h || !has(h) || !h.isDictionary()) return;
+      const t = numOr(h.get("HalftoneType"), 0);
+      if (t === 1) out.Default = one(h);
+      else if (t === 5) h.forEach((v, k) => { if (v.isDictionary() && numOr(v.get("HalftoneType"), 0) === 1) out[k] = one(v); });
+    });
+  }
+  return out;
+}
+
 function fresh() {
   const d = new mupdf.PDFDocument(current);
   for (const op of log) applyOp(d, op);
@@ -546,7 +796,7 @@ function objList(i) {
     return {
       k, type: o.type, bbox: o.bbox, desc, clip: !!o.clip, group: p.G || 0, locked: p.L === 1,
       layer: ls.length ? { id: ls[ls.length - 1].id, name: ls[ls.length - 1].name } : null,
-      layerLocked: ls.some((l) => l.locked), layerHidden: ls.some((l) => !l.visible), text, barcode: o.barcode || null,
+      layerLocked: ls.some((l) => l.locked), layerHidden: ls.some((l) => !l.visible), text, barcode: o.barcode || null, trap: !!p.Trap,
     };
   });
 }
@@ -577,6 +827,7 @@ const api = {
     baseline = current = new Uint8Array(bytes);
     log = [];
     viewState.clear();
+    relinked.clear();
     doc = new mupdf.PDFDocument(current);
     return { pages: doc.countPages(), report: core.documentReport(doc), incremental: doc.canBeSavedIncrementally(), inks: docInks() };
   },
@@ -599,6 +850,54 @@ const api = {
   addText(op) { doEdit({ kind: "addText", ...op }); return { objects: objList(op.i), edits: log.length, inks: docInks() }; },
   replaceText(op) { doEdit({ kind: "replaceText", ...op }); return { objects: objList(op.i), edits: log.length, inks: docInks() }; },
   textOf({ i, k }) { return textOf(i, k); },
+  // trapping
+  trapTiles({ i, rects }) {
+    const { d, first } = tileDoc(i, rects, { withoutTraps: true });
+    const out = d.saveToBuffer("").asUint8Array().slice();
+    d.destroy();
+    return { result: { bytes: out, first }, transfer: [out.buffer] };
+  },
+  traps({ i, groups }) { doEdit({ kind: "traps", i, groups, layerName: "Traps" }); return { objects: objList(i), edits: log.length, layers: layerInfo() }; },
+  removeTraps({ i }) { doEdit({ kind: "removeTraps", i }); return { objects: objList(i), edits: log.length }; },
+  // links
+  images() { return imageList(); },
+  thumb({ i, bbox, size }) {
+    const page = doc.loadPage(i), mb = core.pageBoxes(doc, i).MediaBox;
+    const bw = bbox[2] - bbox[0], bh = bbox[3] - bbox[1];
+    const s = Math.min((size || 96) / Math.max(bw, bh, 1), Math.sqrt(4e6 / ((mb[2] - mb[0]) * (mb[3] - mb[1]))));
+    const pix = page.toPixmap(mupdf.Matrix.scale(s, s), mupdf.ColorSpace.DeviceRGB, false, true, "View", "MediaBox");
+    const W = pix.getWidth(), H = pix.getHeight(), st = pix.getStride(), src = pix.getPixels();
+    const x0 = Math.max(0, Math.floor((bbox[0] - mb[0]) * s)), y0 = Math.max(0, Math.floor((mb[3] - bbox[3]) * s));
+    const w = Math.max(1, Math.min(W - x0, Math.ceil(bw * s))), h = Math.max(1, Math.min(H - y0, Math.ceil(bh * s)));
+    const rgba = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0, q = 0; y < h; y++) for (let x = 0; x < w; x++) { const p = (y0 + y) * st + (x0 + x) * 3; rgba[q++] = src[p]; rgba[q++] = src[p + 1]; rgba[q++] = src[p + 2]; rgba[q++] = 255; }
+    pix.destroy();
+    return { result: { w, h, rgba }, transfer: [rgba.buffer] };
+  },
+  relink({ objnum, data, mode }) {
+    new mupdf.Image(new Uint8Array(data)); // validate before logging
+    doEdit({ kind: "relink", objnum, data, mode });
+    return { edits: log.length, inks: docInks() };
+  },
+  removeImage({ objnum }) { doEdit({ kind: "removeImage", objnum }); return { edits: log.length }; },
+  // screening
+  screens() { return { settings: readScreens(), shapes: DOT_SHAPES }; },
+  applyScreens({ settings }) { doEdit({ kind: "screens", settings }); return { edits: log.length, report: core.documentReport(doc) }; },
+  dotDocs({ i, rect, settings, spots }) {
+    // one render with the per-ink (Type 5) screens for process inks, plus one
+    // per spot ink with that ink's screen as the only screen (see README)
+    const docs = [];
+    const make = (onlyInk) => {
+      const { d } = tileDoc(i, [rect], { atStart: true });
+      applyScreens(d, settings, onlyInk);
+      const out = d.saveToBuffer("").asUint8Array().slice();
+      d.destroy();
+      return out;
+    };
+    docs.push({ bytes: make(null), inks: ["Cyan", "Magenta", "Yellow", "Black"] });
+    for (const s of spots) docs.push({ bytes: make(settings[s] ? s : "Default"), inks: [s] });
+    return { result: docs, transfer: docs.map((x) => x.bytes.buffer) };
+  },
   layers() { return layerInfo(); },
   layerView({ id, visible }) { viewState.set(id, visible); applyView(); return layerInfo(); },
   layerEdit(op) { doEdit(op); return { layers: layerInfo(), edits: log.length, report: core.documentReport(doc) }; },
@@ -650,7 +949,8 @@ const api = {
     const d = fresh();
     subsetOurFonts(d);
     const mode = d.canBeSavedIncrementally() ? "incremental" : "full";
-    const buf = d.saveToBuffer(mode === "incremental" ? "incremental" : "");
+    // compress only applies to objects written now (new images, fonts, content)
+    const buf = d.saveToBuffer(mode === "incremental" ? "incremental,compress" : "compress");
     const out = buf.asUint8Array().slice();
     buf.destroy();
     d.destroy();

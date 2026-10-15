@@ -75,7 +75,7 @@
   .seg button { border-radius: 0; margin-left: -1px; }
   .seg button:first-child { border-radius: 10px 0 0 10px; margin-left: 0; }
   .seg button:last-child { border-radius: 0 10px 10px 0; }
-  nav.tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: -2px 0 12px; position: sticky; top: -12px; background: var(--panel); padding: 4px 0 8px; z-index: 2; }
+  nav.tabs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin: -2px 0 12px; position: sticky; top: -12px; background: var(--panel); padding: 4px 0 8px; z-index: 2; }
   nav.tabs button { padding: 0 4px; min-height: 34px; font-size: 13px; }
   .grid2 textarea { min-height: 70px; font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; resize: vertical; -webkit-user-select: text; user-select: text; }
   label.chk { display: flex; align-items: center; gap: 8px; flex: 1; }
@@ -84,6 +84,16 @@
   .layer .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .layer button { min-height: 34px; padding: 0 9px; }
   .layer button.off { opacity: .45; }
+  .link { background: var(--panel2); border-radius: 12px; padding: 10px; margin-bottom: 8px; }
+  .link .top { display: flex; gap: 10px; align-items: flex-start; }
+  .link canvas { width: 64px; height: 64px; object-fit: contain; background: #fff; border-radius: 6px; flex: none; }
+  .link .meta { font-size: 12.5px; color: var(--dim); }
+  .link .pl { font-size: 12.5px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .link .pl.low { color: var(--warn); }
+  .sc { display: grid; grid-template-columns: 1.4fr 0.9fr 0.8fr 1.2fr; gap: 4px; align-items: center; margin-bottom: 4px; font-size: 13px; }
+  .sc input, .sc select { min-height: 34px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 0 6px; width: 100%; }
+  .sc .nm { display: flex; gap: 6px; align-items: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .sc .nm i { width: 12px; height: 12px; border-radius: 3px; flex: none; }
   .tag { display: inline-block; font-size: 11.5px; padding: 1px 6px; border-radius: 6px; background: var(--line); color: var(--text); margin-right: 4px; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .grid2 label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--dim); }
@@ -150,10 +160,10 @@
   <div id="stage">
     <div id="sheet"><canvas id="page" width="1" height="1"></canvas><svg id="boxes"></svg></div>
     <div id="cross"></div>
-    <div id="empty"><div><h1>Prepress <span style="color:var(--dim);font-weight:400">v4</span></h1>Open a PDF/X file to start.<br>Everything runs on this iPad; files never leave it.</div></div>
+    <div id="empty"><div><h1>Prepress <span style="color:var(--dim);font-weight:400">v5</span></h1>Open a PDF/X file to start.<br>Everything runs on this iPad; files never leave it.</div></div>
   </div>
   <aside id="aside">
-    <nav class="tabs"><button data-tab="inks" class="on">Inks</button><button data-tab="layers">Layers</button><button data-tab="edit">Edit</button><button data-tab="text">Text</button><button data-tab="pre">Preflight</button><button data-tab="bc">Barcode</button><button data-tab="info">Info</button></nav>
+    <nav class="tabs"><button data-tab="inks" class="on">Inks</button><button data-tab="layers">Layers</button><button data-tab="edit">Edit</button><button data-tab="text">Text</button><button data-tab="links">Links</button><button data-tab="trap">Trap</button><button data-tab="screens">Screens</button><button data-tab="pre">Preflight</button><button data-tab="bc">Barcode</button><button data-tab="info">Info</button></nav>
     <section id="tab-inks">
       <div id="inks"><div class="hint">No file open.</div></div>
       <h2>Ink coverage (this page, inside trim)</h2>
@@ -191,6 +201,31 @@
       </div>
       <div class="hint">Fonts are embedded (only the characters used), so the file stays PDF/X-ready. X/Y is the start of the first line's baseline.</div>
       <div class="row"><button id="txTap" disabled>Place by tap</button><button id="txAdd" class="on" disabled>Add text</button></div>
+    </section>
+    <section id="tab-links" hidden>
+      <div id="linkList"><div class="hint">No file open.</div></div>
+      <div class="grid2"><label class="span2">When relinking<select id="lkMode"><option value="fit">Fit proportionally in the frame</option><option value="fill">Fill the frame (may stretch)</option></select></label></div>
+      <input id="lkFile" type="file" accept="image/*,.tif,.tiff,.psd,.jpg,.jpeg,.png" hidden>
+      <div class="hint">PDF files hold images inside them, so "relink" swaps in a new file from Files, iCloud or a drive. CMYK and spot data is kept as it is (JPEG stays JPEG).</div>
+    </section>
+    <section id="tab-trap" hidden>
+      <div class="grid2">
+        <label>Trap width mm<input id="trW" inputmode="decimal" value="0.1"></label>
+        <label>Black width mm<input id="trB" inputmode="decimal" value="0.2"></label>
+        <label>Step limit %<input id="trStep" inputmode="decimal" value="10"></label>
+        <label class="chk"><input id="trImg" type="checkbox"> Trap images</label>
+      </div>
+      <h2>Ink behaviour</h2>
+      <div id="trInks"><div class="hint">No file open.</div></div>
+      <div class="row"><button id="trPage" class="on" disabled>Trap this page</button><button id="trAll" disabled>Trap all pages</button><button id="trRemove" class="danger" disabled>Remove traps</button></div>
+      <div id="trOut"></div>
+      <div class="hint">Where two colours meet and misregistration could show paper, the lighter colour (lower neutral density) spreads into the darker one. Colours that already share enough ink, or differ by less than the step limit, are left alone. Traps are overprinting vector objects on the <b>Traps</b> layer; running again replaces them. Opaque inks (metallics) get the others spread under them; ignored inks (varnish, white) are left out.</div>
+    </section>
+    <section id="tab-screens" hidden>
+      <div id="scTable"><div class="hint">No file open.</div></div>
+      <div class="row"><button id="scApply" class="on" disabled>Apply to document</button><button id="scPreview" disabled>Dot preview</button></div>
+      <canvas id="scCanvas" width="1" height="1" style="width:100%;border-radius:10px;display:none;margin-top:8px;image-rendering:pixelated"></canvas>
+      <div class="hint" id="scInfo">Saved as standard PDF screening (ruling, angle, dot shape per ink). Your RIP or platesetter may use its own screening instead; check with your repro house. The preview shows a 6 × 6 mm area at the centre of the view at 2400 dpi.</div>
     </section>
     <section id="tab-pre" hidden>
       <div class="grid2">
