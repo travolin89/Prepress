@@ -43,6 +43,7 @@
   #stage { position: relative; flex: 1; overflow: hidden; background: var(--stage); touch-action: none; }
   #sheet { position: absolute; left: 0; top: 0; transform-origin: 0 0; box-shadow: 0 4px 24px rgba(0,0,0,.45); }
   #sheet canvas { display: block; image-rendering: auto; }
+  #sheet #detail { position: absolute; left: 0; top: 0; display: none; pointer-events: none; }
   #sheet svg { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
   #cross { position: absolute; width: 0; height: 0; pointer-events: none; display: none; }
   #cross::before, #cross::after { content: ""; position: absolute; background: #ff2d55; }
@@ -158,9 +159,9 @@
 </header>
 <main>
   <div id="stage">
-    <div id="sheet"><canvas id="page" width="1" height="1"></canvas><svg id="boxes"></svg></div>
+    <div id="sheet"><canvas id="page" width="1" height="1"></canvas><canvas id="detail" width="1" height="1"></canvas><svg id="boxes"></svg></div>
     <div id="cross"></div>
-    <div id="empty"><div><h1>Prepress <span style="color:var(--dim);font-weight:400">v5</span></h1>Open a PDF/X file to start.<br>Everything runs on this iPad; files never leave it.</div></div>
+    <div id="empty"><div><h1>Prepress <span style="color:var(--dim);font-weight:400">v6</span></h1>Open a PDF/X file to start.<br>Everything runs on this iPad; files never leave it.</div></div>
   </div>
   <aside id="aside">
     <nav class="tabs"><button data-tab="inks" class="on">Inks</button><button data-tab="layers">Layers</button><button data-tab="edit">Edit</button><button data-tab="text">Text</button><button data-tab="links">Links</button><button data-tab="trap">Trap</button><button data-tab="screens">Screens</button><button data-tab="pre">Preflight</button><button data-tab="bc">Barcode</button><button data-tab="info">Info</button></nav>
@@ -194,7 +195,20 @@
         <label class="span2">Ink<select id="txInk"></select></label>
         <label>X mm from trim<input id="txX" inputmode="decimal" value="5"></label>
         <label>Y mm from trim<input id="txY" inputmode="decimal" value="5"></label>
+        <label class="span2">Shape<select id="txShape"><option value="line">Straight</option><option value="path">Along the selected path</option><option value="circle">Around a circle</option></select></label>
       </div>
+      <div id="txPathOpts" class="grid2" hidden style="margin-top:8px">
+        <label>Start offset mm<input id="txOff" inputmode="decimal" value="0"></label>
+        <label>Baseline shift mm<input id="txBase" inputmode="decimal" value="0"></label>
+        <label>Letter spacing pt<input id="txTrack" inputmode="decimal" value="0"></label>
+        <label class="chk"><input id="txFlip" type="checkbox"> Flip side</label>
+      </div>
+      <div id="txCircleOpts" class="grid2" hidden style="margin-top:8px">
+        <label>Radius mm<input id="txR" inputmode="decimal" value="20"></label>
+        <label>Centre angle °<input id="txAng" inputmode="decimal" value="90"></label>
+        <label class="span2">Position<select id="txSide"><option value="top">Over the top (reads clockwise)</option><option value="bottom">Under the bottom (reads left to right)</option></select></label>
+      </div>
+      <div class="hint" id="txShapeHint"></div>
       <div id="txNewInk" class="grid2" hidden>
         <label class="span2">New spot name<input id="txInkName" value="New spot"></label>
         <label class="span2">Screen colour (C M Y K %)<input id="txInkCMYK" value="0 0 0 100"></label>
@@ -223,7 +237,7 @@
     </section>
     <section id="tab-screens" hidden>
       <div id="scTable"><div class="hint">No file open.</div></div>
-      <div class="row"><button id="scApply" class="on" disabled>Apply to document</button><button id="scPreview" disabled>Dot preview</button></div>
+      <div class="row"><button id="scApply" class="on" disabled>Apply to document</button><button id="scPreview" disabled>Dot preview (tap the page)</button></div>
       <canvas id="scCanvas" width="1" height="1" style="width:100%;border-radius:10px;display:none;margin-top:8px;image-rendering:pixelated"></canvas>
       <div class="hint" id="scInfo">Saved as standard PDF screening (ruling, angle, dot shape per ink). Your RIP or platesetter may use its own screening instead; check with your repro house. The preview shows a 6 × 6 mm area at the centre of the view at 2400 dpi.</div>
     </section>

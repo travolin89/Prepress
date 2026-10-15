@@ -3,7 +3,7 @@
 // bytes stay untouched and edits are appended after them.
 import * as mupdf from "./mupdf.js";
 import * as core from "./pdfcore.js";
-import { parseOps, findObjects, editContent, appendBlock, IDENT, utf16hex, fromUtf16, propsToPdf, mul } from "./content.js";
+import { parseOps, findObjects, editContent, appendBlock, IDENT, utf16hex, fromUtf16, propsToPdf, mul, pathGeometry } from "./content.js";
 import { buildBarcode, TYPES } from "./barcode.js";
 import { runPreflight } from "./preflight.js";
 
@@ -435,12 +435,65 @@ function pdfFont(d, pg, id) {
   return key;
 }
 const fmt = (m) => m.map((v) => +v.toFixed(4)).join(" ");
+// points along a path (page space) for text on a path or around a circle
+function pathPoints(P) {
+  if (P.mode === "circle") {
+    const pts = [], n = 720, dir = P.bottom ? 1 : -1, a0 = ((P.angle ?? (P.bottom ? 270 : 90)) + 180) * Math.PI / 180;
+    for (let k = 0; k <= n; k++) { const a = a0 + dir * 2 * Math.PI * k / n; pts.push([P.cx + P.r * Math.cos(a), P.cy + P.r * Math.sin(a)]); }
+    return pts;
+  }
+  const pts = [];
+  for (let k = 0; k + 1 < P.pts.length; k += 2) pts.push([P.pts[k], P.pts[k + 1]]);
+  return pts;
+}
+function layoutOnPath(font, spec, line) {
+  const P = spec.path;
+  let pts = pathPoints(P);
+  if (P.flip) pts = pts.reverse();
+  const cum = [0];
+  for (let k = 1; k < pts.length; k++) cum.push(cum[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]));
+  const total = cum[cum.length - 1];
+  if (!(total > 0)) throw new Error("The path has no length");
+  const at = (s) => { // point and unit tangent at arc length s (extends straight past the ends)
+    let k = 1;
+    if (s <= 0) k = 1; else if (s >= total) k = pts.length - 1; else while (k < pts.length - 1 && cum[k] < s) k++;
+    const a = pts[k - 1], b = pts[k], len = cum[k] - cum[k - 1] || 1;
+    const tx = (b[0] - a[0]) / len, ty = (b[1] - a[1]) / len, u = s - cum[k - 1];
+    return [a[0] + tx * u, a[1] + ty * u, tx, ty];
+  };
+  const glyphs = [];
+  let width = 0;
+  for (const ch of line) {
+    const gid = font.encodeCharacter(ch.codePointAt(0));
+    const adv = font.advanceGlyph(gid) * spec.size + (P.tracking || 0);
+    glyphs.push({ ch, gid, adv });
+    width += adv;
+  }
+  const align = P.mode === "circle" ? "c" : spec.align;
+  let s = align === "c" ? (total - width) / 2 + (P.offset || 0) : align === "r" ? total - width - (P.offset || 0) : P.offset || 0;
+  return glyphs.map((g) => {
+    const [x, y, tx, ty] = at(s + g.adv / 2);
+    const nx = -ty, ny = tx, b = P.baseline || 0;
+    const m = [tx, ty, -ty, tx, x - tx * g.adv / 2 + nx * b, y - ty * g.adv / 2 + ny * b];
+    s += g.adv;
+    return { ...g, m };
+  });
+}
 function textBlock(d, pg, spec, M) {
   const font = makeFont(spec.font);
   const key = pdfFont(d, pg, spec.font);
   const colour = colourOps(d, pg, spec.ink, spec.tint);
   const missing = new Set();
   let out = `BT\n/${key} ${+spec.size.toFixed(3)} Tf\n0 Tc 0 Tw 100 Tz 0 Ts 0 Tr\n${colour}\n`;
+  if (spec.path) {
+    // text on a path: one glyph at a time, each placed and rotated along the path
+    for (const g of layoutOnPath(font, spec, spec.text.replace(/\r?\n/g, " "))) {
+      if (!g.gid && g.ch.trim()) missing.add(g.ch);
+      out += `${fmt(g.m)} Tm\n<${g.gid.toString(16).padStart(4, "0")}> Tj\n`;
+    }
+    if (missing.size) throw new Error(`The font ${font.getName()} has no glyphs for: ${[...missing].join(" ")}`);
+    return out + "ET";
+  }
   spec.text.split(/\r?\n/).forEach((line, n) => {
     let w = 0, hex = "";
     for (const ch of line) {
@@ -456,7 +509,20 @@ function textBlock(d, pg, spec, M) {
   return out + "ET";
 }
 function textProps(spec, M) {
-  return { T: utf16hex(spec.text), F: spec.font, S: spec.size, Ld: spec.lead, A: spec.align, K: spec.ink.name, KC: spec.ink.cmyk ? spec.ink.cmyk.join(" ") : null, Tn: spec.tint, M: fmt(M) };
+  const p = { T: utf16hex(spec.text), F: spec.font, S: spec.size, Ld: spec.lead, A: spec.align, K: spec.ink.name, KC: spec.ink.cmyk ? spec.ink.cmyk.join(" ") : null, Tn: spec.tint, M: fmt(M) };
+  if (spec.path) p.Path = JSON.stringify(spec.path); // path settings, kept for editing
+  return p;
+}
+// "along the selected path": capture that path's geometry into the edit itself
+function resolvePath(i, spec) {
+  if (!spec.path || spec.path.fromObj === undefined) return spec;
+  const { ops, objs } = pageObjects(doc, i);
+  const o = objs[spec.path.fromObj];
+  if (!o || o.type !== "path") throw new Error("Select a path (a line, curve or shape) to put the text on.");
+  const subs = pathGeometry(ops, o).sort((a, b) => b.length - a.length);
+  if (!subs.length) throw new Error("That path has no usable outline.");
+  const { fromObj, ...rest } = spec.path;
+  return { ...spec, path: { ...rest, mode: "path", pts: subs[0].flat().map((v) => +v.toFixed(3)) } };
 }
 function textOp(d, op) {
   const pg = pageObj(d, op.i);
@@ -559,6 +625,7 @@ function writeTraps(d, op) {
 // page i (same content, smaller media box), for tiled high-resolution renders.
 function tileDoc(i, rects, opts = {}) {
   const d = fresh();
+  if (opts.view) hideLayersIn(d);
   if (opts.withoutTraps) removeTraps(d, i);
   if (opts.screens) applyScreens(d, opts.screens);
   const src = pageObj(d, i);
@@ -758,6 +825,16 @@ function readScreens() {
   return out;
 }
 
+// separations follow the layer view: hidden layers are switched off in a throwaway copy only
+function hideLayersIn(d) {
+  const hidden = layerInfo().filter((l) => !l.visible).map((l) => l.id);
+  if (!hidden.length || !ocProps(d)) return;
+  const D = ocProps(d).get("D");
+  const on = d.newArray(), off = d.newArray();
+  for (const l of listLayers(d)) (hidden.includes(l.id) ? off : on).push(ocgById(d, l.id));
+  D.put("ON", on); D.put("OFF", off); D.delete("BaseState");
+}
+
 function fresh() {
   const d = new mupdf.PDFDocument(current);
   for (const op of log) applyOp(d, op);
@@ -790,7 +867,9 @@ function objList(i) {
     const ids = [...o.layers.flatMap((r) => ocgsForRes(pg, r)), ...(o.xoc ? [o.xoc] : [])];
     const ls = ids.map((id) => layers.get(id)).filter(Boolean);
     const p = o.wrap ? o.wrap.props : {};
-    const text = o.type === "text" ? (p.T ? { ours: true, text: fromUtf16(p.T), font: p.F, size: p.S, lead: p.Ld, align: p.A, ink: p.K, cmyk: p.KC, tint: p.Tn }
+    let path = null;
+    try { path = p.Path ? JSON.parse(p.Path) : null; } catch {}
+    const text = o.type === "text" ? (p.T ? { ours: true, text: fromUtf16(p.T), font: p.F, size: p.S, lead: p.Ld, align: p.A, ink: p.K, cmyk: p.KC, tint: p.Tn, path }
       : { ours: false, size: +o.size.toFixed(2), fontRes: o.fontRes }) : null;
     const desc = text && text.ours ? `Text · ${String(text.font).slice(2)} ${text.size} pt · ${text.ink} ${text.tint}%` : o.desc;
     return {
@@ -847,8 +926,31 @@ const api = {
   edit(op) { doEdit({ kind: "objs", ...op }); return { objects: objList(op.i), edits: log.length, inks: docInks() }; },
   barcode(op) { doEdit({ kind: "barcode", ...op }); return { objects: objList(op.i), edits: log.length, inks: docInks() }; },
   barcodeEdit(op) { doEdit({ kind: "barcodeEdit", ...op }); return { objects: objList(op.i), edits: log.length, inks: docInks() }; },
-  addText(op) { doEdit({ kind: "addText", ...op }); return { objects: objList(op.i), edits: log.length, inks: docInks() }; },
-  replaceText(op) { doEdit({ kind: "replaceText", ...op }); return { objects: objList(op.i), edits: log.length, inks: docInks() }; },
+  addText(op) { doEdit({ kind: "addText", ...op, spec: resolvePath(op.i, op.spec) }); return { objects: objList(op.i), edits: log.length, inks: docInks() }; },
+  replaceText(op) { doEdit({ kind: "replaceText", ...op, spec: resolvePath(op.i, op.spec) }); return { objects: objList(op.i), edits: log.length, inks: docInks() }; },
+  // sharp view: draw only the visible part of the page at screen resolution
+  renderRegion({ i, rect, scale }) {
+    const page = doc.loadPage(i), b = core.pageBoxes(doc, i), mb = b.MediaBox;
+    const c = b.CropBox ? [Math.max(b.CropBox[0], mb[0]), Math.max(b.CropBox[1], mb[1]), Math.min(b.CropBox[2], mb[2]), Math.min(b.CropBox[3], mb[3])] : mb;
+    const bbox = [Math.floor((rect[0] - c[0]) * scale), Math.floor((c[3] - rect[3]) * scale), Math.ceil((rect[2] - c[0]) * scale), Math.ceil((c[3] - rect[1]) * scale)];
+    const pix = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, bbox, false);
+    pix.clear(255);
+    const dev = new mupdf.DrawDevice(mupdf.Matrix.identity, pix);
+    page.run(dev, mupdf.Matrix.scale(scale, scale));
+    dev.close();
+    const w = pix.getWidth(), h = pix.getHeight(), st = pix.getStride(), src = pix.getPixels();
+    const rgba = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0, q = 0; y < h; y++) for (let x = 0, p = y * st; x < w; x++, p += 3) { rgba[q++] = src[p]; rgba[q++] = src[p + 1]; rgba[q++] = src[p + 2]; rgba[q++] = 255; }
+    pix.destroy();
+    return { result: { w, h, rgba, x0: bbox[0] / scale + c[0], y1: c[3] - bbox[1] / scale }, transfer: [rgba.buffer] };
+  },
+  // a one-page document showing just `rect` of page i, for sharp separations
+  regionDoc({ i, rect }) {
+    const { d } = tileDoc(i, [rect], { atStart: true, view: true });
+    const out = d.saveToBuffer("").asUint8Array().slice();
+    d.destroy();
+    return { result: out, transfer: [out.buffer] };
+  },
   textOf({ i, k }) { return textOf(i, k); },
   // trapping
   trapTiles({ i, rects }) {
@@ -928,13 +1030,7 @@ const api = {
     const hidden = layerInfo().filter((l) => !l.visible).map((l) => l.id);
     if (!log.length && !hidden.length) { const c = current.slice(); return { result: c, transfer: [c.buffer] }; }
     const d = fresh();
-    if (hidden.length) {
-      // separations follow the layer view: hidden layers are switched off in this throwaway copy only
-      const D = ocProps(d).get("D");
-      const on = d.newArray(), off = d.newArray();
-      for (const l of listLayers(d)) (hidden.includes(l.id) ? off : on).push(ocgById(d, l.id));
-      D.put("ON", on); D.put("OFF", off); D.delete("BaseState");
-    }
+    hideLayersIn(d);
     const out = d.saveToBuffer("incremental").asUint8Array().slice();
     d.destroy();
     return { result: out, transfer: [out.buffer] };

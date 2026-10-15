@@ -389,3 +389,32 @@ export function editContent(s, ops, objs, edit) {
 export function appendBlock(s, ops, block) {
   return endIsClean(ops) ? `${s}\n${block}\n` : `q\n${s}\nQ\n${block}\n`;
 }
+
+// ------------------------------------------------------------------ path geometry
+// Outline of a path object in page coordinates, curves flattened.
+export function pathGeometry(ops, o) {
+  const subs = [];
+  let cur = null, px = 0, py = 0;
+  const T = (x, y) => tp(o.ctm, x, y);
+  const push = (x, y) => { px = x; py = y; cur.push(T(x, y)); };
+  const curve = (x1, y1, x2, y2, x3, y3) => {
+    const x0 = px, y0 = py;
+    for (let k = 1; k <= 24; k++) {
+      const t = k / 24, u = 1 - t;
+      push(u * u * u * x0 + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t * x3, u * u * u * y0 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y3);
+    }
+    px = x3; py = y3;
+  };
+  for (let k = o.a; k <= o.b; k++) {
+    const op = ops[k], v = op.args.map(num);
+    if (op.op === "m") { cur = []; subs.push(cur); push(v[0], v[1]); }
+    else if (op.op === "re") { cur = []; subs.push(cur); push(v[0], v[1]); push(v[0] + v[2], v[1]); push(v[0] + v[2], v[1] + v[3]); push(v[0], v[1] + v[3]); push(v[0], v[1]); cur.closed = true; }
+    else if (!cur) continue;
+    else if (op.op === "l") push(v[0], v[1]);
+    else if (op.op === "c") curve(...v);
+    else if (op.op === "v") curve(px, py, v[0], v[1], v[2], v[3]);
+    else if (op.op === "y") curve(v[0], v[1], v[2], v[3], v[2], v[3]);
+    else if (op.op === "h") { cur.push(cur[0]); cur.closed = true; }
+  }
+  return subs.filter((s) => s.length > 1);
+}

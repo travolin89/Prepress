@@ -10,7 +10,7 @@ const BOX_STYLE = {
 };
 const SVGNS = "http://www.w3.org/2000/svg";
 
-export const APP_VERSION = "5";
+export const APP_VERSION = "6";
 // Updates: check for a new version on every launch and reload into it
 // (unless a file is open, so unsaved work is never lost).
 if ("serviceWorker" in navigator) {
@@ -193,6 +193,7 @@ async function loadPage(i, fit) {
   const p = await call("page", { i });
   Object.assign(S, { boxes: p.boxes, rotation: p.rotation, spots: p.spots });
   S.objects = await call("objects", { i });
+  hideDetail();
   await render(fit);
   buildBoxEditor();
   buildSelCard();
@@ -235,6 +236,7 @@ async function render(fit) {
     oops("Rendering problem", err);
     return;
   } finally { busy(""); }
+  hideDetail();
   drawOverlay();
   buildInks();
   if (fit || !oldW) fitView();
@@ -261,6 +263,7 @@ function drawComposite() {
   const c = $("page");
   c.width = w; c.height = h;
   c.getContext("2d").putImageData(out, 0, 0);
+  if (S.detail && S.detail.pl) placeDetail(composeDetail(), S.detail.rect[0], S.detail.rect[3], S.detail.rect[2] - S.detail.rect[0], S.detail.rect[3] - S.detail.rect[1]);
 }
 
 // ------------------------------------------------------------------ overlay (boxes, selection, highlights)
@@ -520,6 +523,15 @@ async function buildTextEditor(o) {
       <label class="span2">Align<select id="teAlign"><option value="l">Left</option><option value="c">Centre</option><option value="r">Right</option></select></label>
       ${inkBlock("te", null, t.tint)}
     </div>
+    ${t.path ? `<h2>${t.path.mode === "circle" ? "Around a circle" : "On a path"}</h2><div class="grid2">
+      <label>Start offset mm<input id="teOff" inputmode="decimal" value="${+((t.path.offset || 0) * PT_TO_MM).toFixed(2)}"></label>
+      <label>Baseline shift mm<input id="teBase" inputmode="decimal" value="${+((t.path.baseline || 0) * PT_TO_MM).toFixed(2)}"></label>
+      <label>Letter spacing pt<input id="teTrack" inputmode="decimal" value="${t.path.tracking || 0}"></label>
+      <label class="chk"><input id="teFlip" type="checkbox" ${t.path.flip ? "checked" : ""}> Flip side</label>
+      ${t.path.mode === "circle" ? `<label>Radius mm<input id="teR" inputmode="decimal" value="${+(t.path.r * PT_TO_MM).toFixed(2)}"></label>
+      <label>Centre angle °<input id="teAng" inputmode="decimal" value="${t.path.angle}"></label>
+      <label class="span2">Position<select id="teSide"><option value="top">Over the top</option><option value="bottom" ${t.path.bottom ? "selected" : ""}>Under the bottom</option></select></label>` : ""}
+    </div>` : ""}
     <div class="row"><button id="teGo" class="on">Update text</button></div>`;
   fillFontSelect($("teFont"), t.ours ? t.font : "b:Helvetica");
   $("teAlign").value = t.align || "l";
@@ -529,6 +541,7 @@ async function buildTextEditor(o) {
     let ink;
     try { ink = inkOf("te"); } catch (e) { return oops("Ink", e); }
     const spec = { text: $("teText").value, font: $("teFont").value, size: num("teSize", 10), lead: num("teLead", 12), align: $("teAlign").value, ink, tint: tintOf("te") };
+    if (t.path) spec.path = pathSpec("te", t.path.mode, t.path);
     if (!spec.text.trim()) return oops("Text", new Error("Type some text, or delete the object instead."));
     busy("Updating text…");
     try { await afterEdit(await call("replaceText", { i: S.page, obj: o.k, spec }), true); }
@@ -538,11 +551,33 @@ async function buildTextEditor(o) {
 
 // ------------------------------------------------------------------ text: add new
 $("txInk").addEventListener("change", () => { $("txNewInk").hidden = !$("txInk").value.startsWith("＋"); });
+function updateShapeUI() {
+  const v = $("txShape").value;
+  $("txPathOpts").hidden = v === "line";
+  $("txCircleOpts").hidden = v !== "circle";
+  $("txShapeHint").textContent = v === "path" ? "Select a line, curve or shape first (Select mode), then Add text. The text starts at the path's first point; use Start offset, Align and Flip side to position it. The path itself is kept; delete it afterwards if it was only a guide."
+    : v === "circle" ? "X/Y above is the centre of the circle (or use Place by tap). Text is centred on the centre angle: 90° is the top, 270° the bottom." : "";
+}
+$("txShape").addEventListener("change", updateShapeUI);
+function pathSpec(prefix, shape, existing) {
+  const base = { offset: num(prefix + "Off", 0) / PT_TO_MM, baseline: num(prefix + "Base", 0) / PT_TO_MM, tracking: num(prefix + "Track", 0), flip: $(prefix + "Flip").checked };
+  if (shape === "circle") {
+    const t = trimOrigin();
+    const cx = existing && existing.mode === "circle" && prefix === "te" ? existing.cx : t[0] + num("txX", 0) / PT_TO_MM;
+    const cy = existing && existing.mode === "circle" && prefix === "te" ? existing.cy : t[1] + num("txY", 0) / PT_TO_MM;
+    return { ...base, mode: "circle", cx, cy, r: Math.max(0.5, num(prefix + "R", 20)) / PT_TO_MM, angle: num(prefix + "Ang", 90), bottom: $(prefix + "Side").value === "bottom" };
+  }
+  if (existing && existing.mode === "path") return { ...existing, ...base };
+  const sel = S.sels.map((k) => S.objects[k]);
+  if (sel.length !== 1 || sel[0].type !== "path") throw new Error("Select one line, curve or shape first (Select mode → tap it), then add the text.");
+  return { ...base, fromObj: sel[0].k };
+}
 $("txAdd").onclick = async () => {
   let ink;
   try { ink = readInk($("txInk"), $("txInkName"), $("txInkCMYK")); } catch (e) { return oops("Ink", e); }
   const spec = { text: $("txText").value, font: $("txFont").value, size: num("txSize", 10), lead: num("txLead", 12), align: $("txAlign").value, ink, tint: clamp(num("txTint", 100), 0, 100) };
   if (!spec.text.trim()) return oops("Text", new Error("Type some text first."));
+  if ($("txShape").value !== "line") { try { spec.path = pathSpec("tx", $("txShape").value); } catch (e) { return oops("Text on a path", e); } }
   busy("Adding text…");
   try { await afterEdit(await call("addText", { i: S.page, spec, xMM: num("txX", 0), yMM: num("txY", 0) }), "last"); showTab("edit"); setMode("select"); }
   catch (err) { busy(""); oops("Text not added", err); }
@@ -800,35 +835,45 @@ $("scApply").onclick = async () => {
     dialog("Screens applied", "<p>Ruling, angle and dot shape are now stored in the file for every ink. Use <b>Dot preview</b> to check them.</p>", [["OK"]]);
   } catch (err) { busy(""); oops("Screens", err); }
 };
-$("scPreview").onclick = async () => {
-  let settings;
-  try { settings = screenSettings(); } catch (e) { return oops("Screens", e); }
-  const st = stage.getBoundingClientRect(), c = toPt(toImg({ x: st.width / 2, y: st.height / 2 }));
+$("scPreview").onclick = () => {
+  try { screenSettings(); } catch (e) { return oops("Screens", e); }
+  armPlace("dots");
+};
+async function dotPreviewAt(q) {
+  const settings = screenSettings();
   const half = 3 / PT_TO_MM;
-  const rect = [c.x - half, c.y - half, c.x + half, c.y + half];
+  const rect = [q.x - half, q.y - half, q.x + half, q.y + half];
   const spots = [...new Set([...Object.keys(S.spots), ...S.docInks])].filter((n) => !PROCESS.includes(n));
-  busy("Rendering dots…");
+  busy("Rendering halftone dots…");
   try {
     const docs = await call("dotDocs", { i: S.page, rect, settings, spots });
     const renders = docs.map((d) => ({ bytes: d.bytes.buffer || d.bytes, inks: d.inks }));
     const r = await seps({ cmd: "dots", renders, dpi: 2400 }, renders.map((x) => x.bytes));
     S.gsVer = -1;
-    const cv = $("scCanvas");
-    cv.width = r.w; cv.height = r.h; cv.style.display = "block";
-    const img = new ImageData(r.w, r.h), d = img.data, n = r.w * r.h;
+    const n = r.w * r.h, img = new ImageData(r.w, r.h), d = img.data;
     const acc = new Float32Array(n * 3).fill(1);
+    const used = [];
     r.names.forEach((name, k) => {
       const [cr, cg, cb] = inkRGB(name), pl = r.data[k];
-      for (let i = 0, j = 0; i < n; i++, j += 3) if (pl[i]) { acc[j] *= cr / 255; acc[j + 1] *= cg / 255; acc[j + 2] *= cb / 255; }
+      let cnt = 0;
+      for (let i = 0, j = 0; i < n; i++, j += 3) if (pl[i]) { cnt++; acc[j] *= cr / 255; acc[j + 1] *= cg / 255; acc[j + 2] *= cb / 255; }
+      if (cnt) used.push({ name, pct: (100 * cnt) / n });
     });
-    for (let i = 0, j = 0, q = 0; i < n; i++, j += 3) { d[q++] = acc[j] * 255; d[q++] = acc[j + 1] * 255; d[q++] = acc[j + 2] * 255; d[q++] = 255; }
-    cv.getContext("2d").putImageData(img, 0, 0);
+    for (let i = 0, j = 0, q2 = 0; i < n; i++, j += 3) { d[q2++] = acc[j] * 255; d[q2++] = acc[j + 1] * 255; d[q2++] = acc[j + 2] * 255; d[q2++] = 255; }
     S.highlights = [{ page: S.page, rect }];
     drawOverlay();
-    $("scInfo").textContent = "Preview of the orange-outlined 6 × 6 mm area at the centre of the view, 2400 dpi. Solids show as solid; pan to a tint or vignette to see dots. Your RIP or platesetter may use its own screening; check with your repro house.";
-  } catch (err) { oops("Dot preview", err); }
-  finally { busy(""); }
-};
+    busy("");
+    const rows = used.map((u) => { const s2 = settings[u.name] || settings.Default; const [cr, cg, cb] = inkRGB(u.name);
+      return `<div><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgb(${cr},${cg},${cb})"></i> ${esc(u.name)}: ${s2.lpi} lpi · ${s2.angle}° · ${esc(s2.shape)}${u.pct > 99.5 ? " · solid" : ""}</div>`; }).join("");
+    dialog("Dot preview", `<canvas id="dotCv" style="width:min(78vw,460px);aspect-ratio:1;display:block;border-radius:10px;background:#fff;image-rendering:pixelated"></canvas>
+      <div class="hint" style="margin-top:8px">6 × 6 mm at 2400 dpi (outlined in orange on the page).</div>
+      ${used.length ? rows : `<p class="warn">No ink in this spot. Close this and tap a tint or vignette to see dots.</p>`}
+      ${used.length && used.every((u) => u.pct > 99.5) ? `<p class="hint">Only solids here; solids have no dots. Try a tint.</p>` : ""}`, [["Close"], ["Another spot", () => { armPlace("dots"); }, "on"]]);
+    const cv = $("dotCv");
+    cv.width = r.w; cv.height = r.h;
+    cv.getContext("2d").putImageData(img, 0, 0);
+  } catch (err) { busy(""); oops("Dot preview", err); }
+}
 
 // ------------------------------------------------------------------ page boxes
 function buildBoxEditor() {
@@ -1010,11 +1055,13 @@ function buildBarcodeEditor(o) {
 
 // ------------------------------------------------------------------ place by tap (barcode or text)
 let placeFor = null;
-function armPlace(target, btn) {
+function armPlace(target) {
   placeFor = placeFor === target ? null : target;
   $("bcTap").classList.toggle("on", placeFor === "bc");
   $("txTap").classList.toggle("on", placeFor === "tx");
-  $("readout").innerHTML = placeFor ? `<span>Tap the page where the ${target === "bc" ? "barcode's lower-left corner" : "text should start"} should go</span>` : "";
+  $("scPreview").classList.toggle("on", placeFor === "dots");
+  const what = { bc: "where the barcode's lower-left corner should go", tx: $("txShape").value === "circle" ? "where the centre of the circle should be" : "where the text should start", dots: "where you want to see the halftone dots" }[target];
+  $("readout").innerHTML = placeFor ? `<span>Tap the page ${what}</span>` : "";
 }
 $("bcTap").onclick = () => armPlace("bc");
 $("txTap").onclick = () => armPlace("tx");
@@ -1083,7 +1130,71 @@ async function share(bytes, fname) {
 
 // ------------------------------------------------------------------ view + gestures
 const stage = $("stage");
-function applyView() { $("sheet").style.transform = `translate(${S.tx}px, ${S.ty}px) scale(${S.z})`; }
+function applyView() { $("sheet").style.transform = `translate(${S.tx}px, ${S.ty}px) scale(${S.z})`; scheduleDetail(); }
+
+// ------------------------------------------------------------------ sharp view
+// After the view settles, the visible part of the page is redrawn at the
+// screen's exact resolution (separations at 2x and smoothed), so the preview
+// stays crisp at any zoom. The base image is still shown while panning.
+let detailSeq = 0, detailTimer = null;
+function scheduleDetail() { clearTimeout(detailTimer); detailTimer = setTimeout(renderDetail, 250); }
+function hideDetail() { detailSeq++; $("detail").style.display = "none"; S.detail = null; }
+function composeDetail() {
+  const { pl, ss } = S.detail;
+  const W = Math.floor(pl.w / ss), H = Math.floor(pl.h / ss), out = new ImageData(W, H), d = out.data;
+  const inks = pl.names.map((n, k) => ({ k, on: S.enabled.has(n), c: inkRGB(n).map((v) => 1 - v / 255) })).filter((x) => x.on);
+  const norm = 1 / (255 * ss * ss);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let r = 0, g = 0, b = 0;
+    for (let sy = 0; sy < ss; sy++) for (let sx = 0; sx < ss; sx++) {
+      const p = (y * ss + sy) * pl.w + x * ss + sx;
+      let R = 1, G = 1, B = 1;
+      for (const ink of inks) { const t = pl.data[ink.k][p]; if (t) { const f = t / 255; R *= 1 - f * ink.c[0]; G *= 1 - f * ink.c[1]; B *= 1 - f * ink.c[2]; } }
+      r += R; g += G; b += B;
+    }
+    const q = (y * W + x) * 4, k = 255 / (ss * ss);
+    d[q] = r * k; d[q + 1] = g * k; d[q + 2] = b * k; d[q + 3] = 255;
+  }
+  return out;
+}
+function placeDetail(img, x0pt, y1pt, wpt, hpt) {
+  const cv = $("detail"), mb = S.boxes.MediaBox, s0 = pxPerPt();
+  cv.width = img.width; cv.height = img.height;
+  cv.getContext("2d").putImageData(img, 0, 0);
+  Object.assign(cv.style, { left: `${(x0pt - mb[0]) * s0}px`, top: `${(mb[3] - y1pt) * s0}px`, width: `${wpt * s0}px`, height: `${hpt * s0}px`, display: "block" });
+}
+async function renderDetail() {
+  if (!S.open || !S.w || S.rotation || $("busy").style.display === "grid") return;
+  const dpr = window.devicePixelRatio || 1, f = S.z * dpr;
+  if (f <= 1.05) { hideDetail(); return; } // the base image already has enough pixels
+  const st = stage.getBoundingClientRect();
+  const x0 = Math.max(0, Math.floor(-S.tx / S.z)), y0 = Math.max(0, Math.floor(-S.ty / S.z));
+  const x1 = Math.min(S.w, Math.ceil((st.width - S.tx) / S.z)), y1 = Math.min(S.h, Math.ceil((st.height - S.ty) / S.z));
+  if (x1 - x0 < 2 || y1 - y0 < 2) return;
+  const mb = S.boxes.MediaBox, s0 = pxPerPt();
+  const rect = [mb[0] + x0 / s0, mb[3] - y1 / s0, mb[0] + x1 / s0, mb[3] - y0 / s0];
+  const wpt = rect[2] - rect[0], hpt = rect[3] - rect[1];
+  let scale = Math.min(s0 * f, 2400 / 72);
+  if (wpt * hpt * scale * scale > 16e6) scale = Math.sqrt(16e6 / (wpt * hpt));
+  const seq = ++detailSeq, page = S.page, sepsOn = S.sepsOn;
+  try {
+    if (!sepsOn) {
+      const r = await call("renderRegion", { i: page, rect, scale });
+      if (seq !== detailSeq) return;
+      placeDetail(new ImageData(r.rgba, r.w, r.h), r.x0, r.y1, r.w / scale, r.h / scale);
+    } else {
+      const ss = wpt * hpt * scale * scale * 4 <= 24e6 ? 2 : 1;
+      const dpi = Math.round(scale * 72 * ss);
+      const doc = new Uint8Array(await call("regionDoc", { i: page, rect }));
+      if (seq !== detailSeq) return;
+      const pl = await seps({ cmd: "plates", bytes: doc.buffer, page: 0, dpi }, [doc.buffer]);
+      S.gsVer = -1; // the separation engine now holds the region document
+      if (seq !== detailSeq || !S.sepsOn) return;
+      S.detail = { pl, ss, rect };
+      placeDetail(composeDetail(), rect[0], rect[3], wpt, hpt);
+    }
+  } catch { /* keep the base image */ }
+}
 function fitView() {
   if (!S.w) return;
   const r = stage.getBoundingClientRect();
@@ -1195,6 +1306,7 @@ const end = (e) => {
   if (marquee && marquee.armed) { finishMarquee(); return; }
   marquee = null;
   if (moved < 8 && pts.size === 0) {
+    if (placeFor === "dots") { const q = toPt(toImg(p)); armPlace(null); dotPreviewAt(q); return; }
     if (placeFor) {
       const q = toPt(toImg(p)), t = trimOrigin(), target = placeFor;
       const [xi, yi] = target === "bc" ? ["bcPosX", "bcPosY"] : ["txX", "txY"];

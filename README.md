@@ -18,7 +18,7 @@ The website only delivers the app's code. Files you open are processed on the iP
   - **Pan**: drag to move around.
   - **Select**: tap an object to select it, drag to move it, and tap the same spot again to pick the object underneath.
   - **Measure**: drag to read ink percentages.
-- **Moving around**: pinch to zoom in any mode, and double-tap to fit in Pan mode. An Apple Pencil hover or a trackpad pointer reads ink values without touching.
+- **Moving around**: pinch to zoom in any mode, and double-tap to fit in Pan mode. When you stop moving, the visible area is redrawn at your iPad's full screen resolution, so it stays sharp at any zoom. In Separations mode it's rendered at double resolution and smoothed. An Apple Pencil hover or a trackpad pointer reads ink values without touching.
 - **Separations**: true plates from Ghostscript, with overprint handled like a RIP.
 - **Undo**: steps back through your edits since the last save.
 
@@ -37,7 +37,8 @@ The website only delivers the app's code. Files you open are processed on the iP
   - **Text**: select a text object to edit it. Text added in this app keeps all its settings. For text from the original file, the current wording is filled in, and updating it replaces the text in the same position and angle using the font you pick (the file's own fonts are usually subsets, so they can't take new letters).
   - **Barcodes**: select a barcode to change its data, magnification, bar height, BWR, ink or tint. Its lower-left corner stays put.
   - **Page boxes**, plus a one-tap bleed setting.
-- **Text**: add text using a built-in font (Helvetica, Times or Courier families) or your own TTF/OTF font. **Import font** stores it on this iPad. Set the size, line spacing, alignment, ink, tint and position, or place it by tapping the page. Fonts are embedded with only the characters used.
+- **Text**: under **Shape**, choose **Straight**, **Along the selected path** (select a line, curve or shape first; the text follows it from its first point), or **Around a circle** (set the centre by tapping, plus radius, centre angle, and over the top or under the bottom, as on round labels). Path text has start offset, baseline shift, letter spacing and flip side, and stays on its path when edited.
+  Add text using a built-in font (Helvetica, Times or Courier families) or your own TTF/OTF font. **Import font** stores it on this iPad. Set the size, line spacing, alignment, ink, tint and position, or place it by tapping the page. Fonts are embedded with only the characters used.
 - **Links**: every image and scan in the file.
   - For each one: thumbnail, pixel size, colour (CMYK, RGB, Grey, ICC, spot or DeviceN), compression, and every placement with its page, size in mm and effective ppi. Low ppi is highlighted.
   - **Show** jumps to the image.
@@ -51,7 +52,7 @@ The website only delivers the app's code. Files you open are processed on the iP
   - It works from true separations, rendered in tiles at a resolution where the trap width is a whole number of pixels (0.1 mm becomes 3 px at 762 dpi). Trap edges are accurate to one pixel at that resolution.
 - **Screens**: ruling (lpi), angle and dot shape (Round, Ellipse, EllipseC, Square, Diamond, Line, Cross) for every ink, with "Others" as the default.
   - **Apply to document** stores them as standard PDF screening.
-  - **Dot preview** renders the 6 × 6 mm area at the centre of the view as real halftone dots at 2400 dpi.
+  - **Dot preview**: tap the button, then tap the page where you want to look. A window shows the real halftone dots for that 6 × 6 mm area at 2400 dpi. Solids have no dots, so tap a tint or vignette.
   - Many RIPs and platesetters apply their own screening and ignore the screening in the PDF, so confirm with your repro house which settings win.
 - **Preflight**: checks for missing fonts, low-resolution and RGB images, RGB colour, hairlines and zero-width lines, small text, bleed, trim box, PDF/X marking and output intent, and total ink coverage. The limits are adjustable. Tap a result to jump to it on the page. Content checks include hidden layers.
 - **Barcode**: EAN-13, UPC-A, EAN-8, GS1-128, Code 128, ITF-14, GS1 DataMatrix, DataMatrix, GS1 QR and QR.

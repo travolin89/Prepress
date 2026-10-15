@@ -4,7 +4,7 @@
 // - Engines (large WebAssembly files): cache first; they only change with a
 //   new VERSION, which re-downloads everything.
 // - Installs bypass the browser's HTTP cache so a new version never stores stale files.
-const VERSION = "prepress-v5";
+const VERSION = "prepress-v6";
 const SHELL = [
   "./", "index.html", "app.js", "pdfcore.js", "tiff.js", "content.js", "barcode.js", "preflight.js",
   "engine-worker.js", "seps-worker.js", "trap.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png",
