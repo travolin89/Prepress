@@ -1,6 +1,7 @@
 // Prepress for iPad: main thread (UI, gestures, compositing).
 import { PROCESS_INKS, FALLBACK_RGB, PT_TO_MM } from "./pdfcore.js";
 import { inkND } from "./trap.js";
+import { rotateGrey, linesToPage, tesseractLines, inkFromDesc } from "./ocr.js";
 
 const $ = (id) => document.getElementById(id);
 const MAX_PIXELS = 12e6; // stay under iPadOS canvas limits
@@ -10,7 +11,7 @@ const BOX_STYLE = {
 };
 const SVGNS = "http://www.w3.org/2000/svg";
 
-export const APP_VERSION = "6";
+export const APP_VERSION = "7";
 // Updates: check for a new version on every launch and reload into it
 // (unless a file is open, so unsaved work is never lost).
 if ("serviceWorker" in navigator) {
@@ -43,7 +44,9 @@ function rpcWorker(url) {
     waiting.delete(id);
     error ? rej(new Error(error)) : res(result);
   };
-  w.onerror = (e) => { for (const { rej } of waiting.values()) rej(new Error(e.message || "Worker failed to load")); waiting.clear(); };
+  const failAll = (msg) => { for (const { rej } of waiting.values()) rej(new Error(msg)); waiting.clear(); };
+  w.onerror = (e) => failAll(e.message || "The engine stopped unexpectedly (possibly out of memory). Try a smaller area or resolution.");
+  w.onmessageerror = () => failAll("The engine could not send its result (possibly out of memory).");
   return (payload, transfer = [], onProgress) => ready.then(() => new Promise((res, rej) => {
     const id = ++seq;
     waiting.set(id, { res, rej, onProgress });
@@ -60,13 +63,14 @@ const S = {
   name: "", pages: 0, page: 0, open: false,
   boxes: null, rotation: 0, spots: {}, docInks: [], dpi: 150, effDpi: 150, w: 0, h: 0,
   plates: null, enabled: new Set(), sepsOn: false, boxesOn: true,
-  mode: "pan", objects: [], sels: [], edits: 0, ver: 0, gsVer: -1,
+  mode: "pan", objects: [], sels: [], edits: 0, ver: 0, gsVer: -1, inkView: {},
   z: 1, tx: 0, ty: 0, highlights: [], issues: [], bcTypes: [], layers: [], fonts: [],
 };
 
 // ------------------------------------------------------------------ helpers
 function busy(msg) { $("busymsg").textContent = msg; $("busy").style.display = msg ? "grid" : "none"; }
-function dialog(title, html, actions) {
+function dialog(title, html, actions, opts = {}) {
+  $("dlg").style.maxWidth = opts.wide ? "min(960px, 96vw)" : "";
   $("dlgTitle").textContent = title;
   $("dlgBody").innerHTML = html;
   const acts = $("dlgActs");
@@ -84,6 +88,11 @@ const oops = (title, err) => dialog(title, esc(err.message || err), [["OK"]]);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const num = (id, dflt) => { const el = typeof id === "string" ? $(id) : id; const v = parseFloat(String(el.value).replace(",", ".")); return Number.isFinite(v) ? v : dflt; };
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+// How each ink shows in the separations preview. Varnishes and technical inks
+// (Clear, Grid, dielines…) don't print as colour, so they're hidden by default.
+const INK_HIDE = /\b(clear|varnish|lack|lacquer|vernis|gloss|matt|matte|uv|coating|primer|grid|dieline|die|diecut|cut|cutting|cutcontour|crease|creasing|rill|stanz|stanzkontur|perf|perforation|technical|info|dimensions?|measure|marks?|template|construction)\b/i;
+const inkView = (n) => S.inkView[n] || (INK_HIDE.test(n) ? "hide" : "show");
+const inkStrength = (n) => ({ show: 1, light: 0.3, hide: 0 })[inkView(n)];
 function inkRGB(name) {
   if (PROCESS_INKS[name]) return PROCESS_INKS[name];
   if (S.spots[name]) return S.spots[name];
@@ -249,9 +258,10 @@ function drawComposite() {
   const out = new ImageData(w, h), d = out.data, n = w * h;
   const acc = new Float32Array(n * 3).fill(1);
   names.forEach((name, k) => {
-    if (!S.enabled.has(name)) return;
+    const str = inkStrength(name);
+    if (!str) return;
     const [r, g, b] = inkRGB(name);
-    const kr = 1 - r / 255, kg = 1 - g / 255, kb = 1 - b / 255, cov = data[k];
+    const kr = (1 - r / 255) * str, kg = (1 - g / 255) * str, kb = (1 - b / 255) * str, cov = data[k];
     for (let i = 0, j = 0; i < n; i++, j += 3) {
       const c = cov[i];
       if (!c) continue;
@@ -300,31 +310,27 @@ function buildInks() {
   const box = $("inks");
   box.innerHTML = "";
   const names = S.plates ? S.plates.names : [...Object.keys(PROCESS_INKS), ...Object.keys(S.spots)];
-  if (!S.plates) box.insertAdjacentHTML("beforeend", `<div class="hint">Turn on Separations to switch plates on and off and read ink values.</div>`);
+  box.insertAdjacentHTML("beforeend", `<div class="hint">${S.plates ? "How each ink shows in the separations preview. Varnishes and technical inks (Clear, Grid, dielines) are hidden at first because they don't print as colour." : "Turn on Separations to see the plates. These settings apply there."}</div>`);
   for (const n of names) {
     const [r, g, b] = inkRGB(n);
-    const row = document.createElement("label");
+    const row = document.createElement("div");
     row.className = "ink";
-    row.innerHTML = `<span class="sw" style="background:rgb(${r},${g},${b})"></span><span class="nm">${esc(n)}</span>`;
-    if (S.plates) {
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = S.enabled.has(n);
-      cb.onchange = () => { cb.checked ? S.enabled.add(n) : S.enabled.delete(n); drawComposite(); };
-      row.appendChild(cb);
-    }
+    row.innerHTML = `<span class="sw" style="background:rgb(${r},${g},${b})"></span><span class="nm">${esc(n)}</span>
+      <select style="min-height:34px;font:inherit;font-size:13px;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:0 6px">
+        <option value="show">Show</option><option value="light">Light</option><option value="hide">Hide</option></select>`;
+    const sel = row.querySelector("select");
+    sel.value = inkView(n);
+    sel.onchange = () => { S.inkView[n] = sel.value; if (S.plates) drawComposite(); };
     box.appendChild(row);
   }
-  if (S.plates) {
-    const acts = document.createElement("div");
-    acts.className = "row";
-    const all = document.createElement("button"); all.textContent = "All on";
-    all.onclick = () => { S.enabled = new Set(S.plates.names); buildInks(); drawComposite(); };
-    const none = document.createElement("button"); none.textContent = "All off";
-    none.onclick = () => { S.enabled.clear(); buildInks(); drawComposite(); };
-    acts.append(all, none);
-    box.appendChild(acts);
-  }
+  const acts = document.createElement("div");
+  acts.className = "row";
+  const all = document.createElement("button"); all.textContent = "Show all";
+  all.onclick = () => { for (const n of names) S.inkView[n] = "show"; buildInks(); if (S.plates) drawComposite(); };
+  const reset = document.createElement("button"); reset.textContent = "Reset";
+  reset.onclick = () => { S.inkView = {}; buildInks(); if (S.plates) drawComposite(); };
+  acts.append(all, reset);
+  box.appendChild(acts);
 }
 
 function areaStats(pl, region, mb) {
@@ -437,6 +443,7 @@ function buildSelCard() {
       ${groups.size ? `<button id="ungrpGo">Ungroup</button>` : ""}
       <button id="lockGo">Lock</button><button id="delGo" class="danger">Delete</button>
     </div>
+    ${sel.some((o) => o.type === "path") ? `<div class="row"><button id="o2tGo">Outlines → live text${sel.some((o) => o.type !== "path") ? ` (${sel.filter((o) => o.type === "path").length} shapes)` : ""}</button></div>` : ""}
     <div class="grid2" style="margin-top:10px"><label>Layer<select id="lyTo"></select></label><label>&nbsp;<button id="lyGo">Move to layer</button></label></div>
     ${canInk ? `<div class="grid2" style="margin-top:10px">${inkBlock("rc")}</div><div class="row"><button id="rcGo">Apply ink</button></div>` : ""}
     ${one && one.type === "text" ? `<div id="txEdit"></div>` : ""}
@@ -449,6 +456,7 @@ function buildSelCard() {
   $("mvGo").onclick = () => moveSel(num("mvX", 0) / PT_TO_MM, num("mvY", 0) / PT_TO_MM);
   $("delGo").onclick = () => doEdit({ action: "delete" }, true);
   $("lockGo").onclick = () => doEdit({ action: "lock" }, true);
+  if ($("o2tGo")) $("o2tGo").onclick = outlinesToText;
   if ($("grpGo")) $("grpGo").onclick = () => doEdit({ action: "group" });
   if ($("ungrpGo")) $("ungrpGo").onclick = () => doEdit({ action: "ungroup" });
   $("lyTo").innerHTML = `<option value="">(no layer)</option>` + S.layers.map((l) => `<option value="${l.id}" ${l.locked ? "disabled" : ""}>${esc(l.name)}${l.locked ? " (locked)" : ""}</option>`).join("");
@@ -582,6 +590,74 @@ $("txAdd").onclick = async () => {
   try { await afterEdit(await call("addText", { i: S.page, spec, xMM: num("txX", 0), yMM: num("txY", 0) }), "last"); showTab("edit"); setMode("select"); }
   catch (err) { busy(""); oops("Text not added", err); }
 };
+
+// ------------------------------------------------------------------ outlined text -> live text (OCR, on the iPad)
+let tess = null;
+const SIMD_TEST = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]);
+async function ocrEngine() {
+  if (tess) return tess;
+  const T = await import("./tesseract.esm.min.js");
+  const createWorker = T.createWorker || (T.default && T.default.createWorker);
+  const simd = typeof WebAssembly === "object" && WebAssembly.validate(SIMD_TEST);
+  const here = (f) => new URL(f, location.href).href;
+  tess = await createWorker("eng", 1, {
+    workerPath: here("tesseract-worker.min.js"), langPath: here("./").replace(/\/$/, ""), gzip: true, workerBlobURL: false,
+    corePath: here(simd ? "tesseract-core-simd-lstm.wasm.js" : "tesseract-core-lstm.wasm.js"), logger: () => {},
+  });
+  return tess;
+}
+async function outlinesToText() {
+  const shapeKs = S.sels.filter((k) => S.objects[k] && S.objects[k].type === "path"); // anything else selected is left alone
+  const sel = shapeKs.map((k) => S.objects[k]);
+  if (!sel.length) return oops("Outlines → live text", new Error("Select the outlined letters (shapes) first."));
+  busy("Reading the outlined text…");
+  let lines, best;
+  try {
+    const im = await call("outlineImage", { i: S.page, objs: shapeKs, dpi: 400 });
+    busy("Loading text recognition (first time only)…");
+    const w = await ocrEngine();
+    busy("Reading the outlined text…");
+    for (const q of [0, 1, 3, 2]) { // upright first, then the other right-angle rotations
+      const r = rotateGrey(im.grey, im.w, im.h, q);
+      const rgba = new Uint8ClampedArray(r.w * r.h * 4);
+      for (let i = 0, j = 0; i < r.g.length; i++, j += 4) { rgba[j] = rgba[j + 1] = rgba[j + 2] = r.g[i]; rgba[j + 3] = 255; }
+      const cnv = document.createElement("canvas"); // Tesseract reads a canvas reliably on every browser
+      cnv.width = r.w; cnv.height = r.h;
+      cnv.getContext("2d").putImageData(new ImageData(rgba, r.w, r.h), 0, 0);
+      const res = await w.recognize(cnv, {}, { blocks: true });
+      if (!best || res.data.confidence > best.conf) best = { q, conf: res.data.confidence, data: res.data };
+      if (res.data.confidence > 85) break;
+    }
+    lines = linesToPage(tesseractLines(best.data), im, best.q);
+  } catch (err) { busy(""); return oops("Outlines → live text", err); }
+  busy("");
+  if (!lines.length) return oops("Outlines → live text", new Error("No text could be read from these shapes. Script and decorative lettering often can't be recognised."));
+  const ink = inkFromDesc(sel[0].desc);
+  dialog("Outlines → live text", `
+    <p class="hint">Read with ${Math.round(best.conf)}% confidence${best.q ? `, turned ${best.q * 90}°` : ""}. Check every line; fonts can't be recognised, so pick the closest one.</p>
+    <div id="otLines">${lines.map((l, n) => `<div class="grid2" style="grid-template-columns:1fr 70px;margin-bottom:6px"><label>Line ${n + 1}${l.conf < 70 ? ' <span class="warn">(check)</span>' : ""}<input data-l="${n}" class="otText" value="${esc(l.text)}"></label><label>Size pt<input data-s="${n}" class="otSize" inputmode="decimal" value="${l.size}"></label></div>`).join("")}</div>
+    <div class="grid2"><label class="span2">Font<select id="otFont" class="fontSel"></select></label>${inkBlock("ot", null, ink.tint)}
+      <label class="chk span2"><input id="otWidth" type="checkbox" checked> Match the original line widths</label>
+      <label class="chk span2"><input id="otKeep" type="checkbox" checked> Keep the outlines on a hidden, locked layer</label></div>`,
+    [["Cancel"], ["Convert", async () => {
+      let inkSel;
+      try { inkSel = inkOf("ot"); } catch (e) { oops("Ink", e); return; }
+      const edited = lines.map((l, n) => ({ ...l, text: document.querySelector(`.otText[data-l="${n}"]`).value, size: Math.max(1, num(document.querySelector(`.otSize[data-s="${n}"]`), l.size)) }));
+      const objs = [...shapeKs];
+      $("dlg").close();
+      busy("Converting to live text…");
+      try {
+        const r = await call("outlinesToText", { i: S.page, objs, lines: edited, font: $("otFont").value, ink: inkSel, tint: tintOf("ot"), keep: $("otKeep").checked, matchWidth: $("otWidth").checked });
+        S.layers = r.layers; buildLayers();
+        await afterEdit(r, false);
+        const made = S.objects.filter((o) => o.text && o.text.ours).slice(-edited.length).map((o) => o.k);
+        setSelection(expandGroups(made));
+      } catch (err) { busy(""); oops("Outlines → live text", err); }
+      return true;
+    }, "on"]], { wide: true });
+  fillFontSelect($("otFont"), "b:Helvetica");
+  wireInk("ot", inkOptions().includes(ink.name) ? ink.name : "Black");
+}
 
 // ------------------------------------------------------------------ layers tab
 function buildLayers() {
@@ -841,38 +917,119 @@ $("scPreview").onclick = () => {
 };
 async function dotPreviewAt(q) {
   const settings = screenSettings();
-  const half = 3 / PT_TO_MM;
+  const sizeMM = +$("scSize").value || 100;
+  const half = sizeMM / 2 / PT_TO_MM;
   const rect = [q.x - half, q.y - half, q.x + half, q.y + half];
+  // keep the picture within ~15 megapixels (iPad canvas limit is 16.7)
+  const dpi = Math.min(2400, Math.floor(3870 / (sizeMM / 25.4)));
   const spots = [...new Set([...Object.keys(S.spots), ...S.docInks])].filter((n) => !PROCESS.includes(n));
-  busy("Rendering halftone dots…");
+  busy(`Rendering ${sizeMM} × ${sizeMM} mm of halftone dots at ${dpi} dpi…`);
   try {
     const docs = await call("dotDocs", { i: S.page, rect, settings, spots });
     const renders = docs.map((d) => ({ bytes: d.bytes.buffer || d.bytes, inks: d.inks }));
-    const r = await seps({ cmd: "dots", renders, dpi: 2400 }, renders.map((x) => x.bytes));
+    // never wait forever: if the engine runs out of memory on the iPad, say so
+    const r = await Promise.race([
+      seps({ cmd: "dots", renders, dpi }, renders.map((x) => x.bytes), (m) => busy(`${m}…`)),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("The dot preview took too long. Try a smaller preview area.")), 180000)),
+    ]);
     S.gsVer = -1;
-    const n = r.w * r.h, img = new ImageData(r.w, r.h), d = img.data;
-    const acc = new Float32Array(n * 3).fill(1);
+    busy("Composing dots…");
+    await new Promise((res) => setTimeout(res, 30));
+    const W = r.w, H = r.h, img = new ImageData(W, H), d = img.data;
+    d.fill(255);
     const used = [];
     r.names.forEach((name, k) => {
-      const [cr, cg, cb] = inkRGB(name), pl = r.data[k];
+      const str = inkStrength(name) || 0;
+      const [cr, cg, cb] = inkRGB(name);
+      const mr = 1 - str * (1 - cr / 255), mg = 1 - str * (1 - cg / 255), mb = 1 - str * (1 - cb / 255);
+      const bits = r.bits[k], one = r.inkIsOne[k], stride = r.stride;
       let cnt = 0;
-      for (let i = 0, j = 0; i < n; i++, j += 3) if (pl[i]) { cnt++; acc[j] *= cr / 255; acc[j + 1] *= cg / 255; acc[j + 2] *= cb / 255; }
-      if (cnt) used.push({ name, pct: (100 * cnt) / n });
+      for (let y = 0; y < H; y++) {
+        const row = y * stride;
+        for (let xb = 0; xb < stride; xb++) {
+          let byte = bits[row + xb];
+          if (!one) byte = ~byte & 255;
+          if (!byte) continue;
+          for (let bit = 0; bit < 8; bit++) {
+            if (!((byte >> (7 - bit)) & 1)) continue;
+            const x = xb * 8 + bit;
+            if (x >= W) break;
+            cnt++;
+            if (!str) continue;
+            const p = (y * W + x) * 4;
+            d[p] *= mr; d[p + 1] *= mg; d[p + 2] *= mb;
+          }
+        }
+      }
+      if (cnt) used.push({ name, pct: (100 * cnt) / (W * H), hidden: !str });
     });
-    for (let i = 0, j = 0, q2 = 0; i < n; i++, j += 3) { d[q2++] = acc[j] * 255; d[q2++] = acc[j + 1] * 255; d[q2++] = acc[j + 2] * 255; d[q2++] = 255; }
     S.highlights = [{ page: S.page, rect }];
     drawOverlay();
     busy("");
     const rows = used.map((u) => { const s2 = settings[u.name] || settings.Default; const [cr, cg, cb] = inkRGB(u.name);
-      return `<div><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgb(${cr},${cg},${cb})"></i> ${esc(u.name)}: ${s2.lpi} lpi · ${s2.angle}° · ${esc(s2.shape)}${u.pct > 99.5 ? " · solid" : ""}</div>`; }).join("");
-    dialog("Dot preview", `<canvas id="dotCv" style="width:min(78vw,460px);aspect-ratio:1;display:block;border-radius:10px;background:#fff;image-rendering:pixelated"></canvas>
-      <div class="hint" style="margin-top:8px">6 × 6 mm at 2400 dpi (outlined in orange on the page).</div>
-      ${used.length ? rows : `<p class="warn">No ink in this spot. Close this and tap a tint or vignette to see dots.</p>`}
-      ${used.length && used.every((u) => u.pct > 99.5) ? `<p class="hint">Only solids here; solids have no dots. Try a tint.</p>` : ""}`, [["Close"], ["Another spot", () => { armPlace("dots"); }, "on"]]);
+      return `<span style="margin-right:12px;white-space:nowrap"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgb(${cr},${cg},${cb})"></i> ${esc(u.name)} ${s2.lpi} lpi · ${s2.angle}° · ${esc(s2.shape)}${u.hidden ? " (hidden in Inks)" : ""}</span>`; }).join("");
+    dialog(`Dot preview · ${sizeMM} × ${sizeMM} mm`, `
+      <div id="dotView" style="width:min(92vw,900px);height:min(66vh,900px);overflow:hidden;position:relative;background:#fff;border-radius:10px;touch-action:none">
+        <canvas id="dotCv" style="position:absolute;left:0;top:0;transform-origin:0 0"></canvas></div>
+      <div class="row"><button id="dvFit">Fit</button><button id="dvOne">1:1</button><button id="dvIn">＋</button><button id="dvOut">−</button>
+        <span class="hint" style="margin:0">${dpi} dpi · pinch or scroll to zoom, drag to move</span></div>
+      <div class="hint" style="margin-top:6px">${used.length ? rows : '<span class="warn">No ink in this area. Tap somewhere with artwork.</span>'}</div>`,
+      [["Close"], ["Another area", () => { armPlace("dots"); }, "on"]], { wide: true });
     const cv = $("dotCv");
-    cv.width = r.w; cv.height = r.h;
+    cv.width = W; cv.height = H;
     cv.getContext("2d").putImageData(img, 0, 0);
+    zoomable($("dotView"), cv);
   } catch (err) { busy(""); oops("Dot preview", err); }
+}
+
+// a small pinch / scroll / drag zoom viewer for a canvas inside a box
+function zoomable(view, cv) {
+  const st = { z: 1, x: 0, y: 0 };
+  const apply = () => {
+    cv.style.transform = `translate(${st.x}px, ${st.y}px) scale(${st.z})`;
+    cv.style.imageRendering = st.z >= 1 ? "pixelated" : "auto";
+  };
+  const fit = () => {
+    const r = view.getBoundingClientRect();
+    st.z = Math.min(r.width / cv.width, r.height / cv.height);
+    st.x = (r.width - cv.width * st.z) / 2; st.y = (r.height - cv.height * st.z) / 2;
+    apply();
+  };
+  const zoom = (f, cx, cy) => {
+    const nz = Math.min(Math.max(st.z * f, 0.02), 16);
+    st.x = cx - (cx - st.x) * (nz / st.z); st.y = cy - (cy - st.y) * (nz / st.z); st.z = nz;
+    apply();
+  };
+  const centre = () => { const r = view.getBoundingClientRect(); return [r.width / 2, r.height / 2]; };
+  const loc = (e) => { const r = view.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  const pts = new Map();
+  let pinch = null;
+  view.addEventListener("pointerdown", (e) => {
+    view.setPointerCapture(e.pointerId); pts.set(e.pointerId, loc(e));
+    if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 }; }
+  });
+  view.addEventListener("pointermove", (e) => {
+    if (!pts.has(e.pointerId)) return;
+    const p = loc(e), prev = pts.get(e.pointerId);
+    pts.set(e.pointerId, p);
+    if (pts.size >= 2 && pinch) {
+      const [a, b] = [...pts.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      st.x += mx - pinch.mx; st.y += my - pinch.my;
+      zoom(d / pinch.d, mx, my);
+      pinch = { d, mx, my };
+    } else if (pts.size === 1) { st.x += p.x - prev.x; st.y += p.y - prev.y; apply(); }
+  });
+  const end = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; };
+  view.addEventListener("pointerup", end);
+  view.addEventListener("pointercancel", end);
+  view.addEventListener("wheel", (e) => { e.preventDefault(); const p = loc(e); if (e.ctrlKey) zoom(Math.exp(-e.deltaY * 0.01), p.x, p.y); else { st.x -= e.deltaX; st.y -= e.deltaY; apply(); } }, { passive: false });
+  view.addEventListener("gesturestart", (e) => e.preventDefault());
+  $("dvFit").onclick = fit;
+  $("dvOne").onclick = () => { const [cx, cy] = centre(); zoom(1 / (window.devicePixelRatio || 1) / st.z, cx, cy); };
+  $("dvIn").onclick = () => { const [cx, cy] = centre(); zoom(1.6, cx, cy); };
+  $("dvOut").onclick = () => { const [cx, cy] = centre(); zoom(1 / 1.6, cx, cy); };
+  requestAnimationFrame(fit);
 }
 
 // ------------------------------------------------------------------ page boxes
@@ -1142,7 +1299,7 @@ function hideDetail() { detailSeq++; $("detail").style.display = "none"; S.detai
 function composeDetail() {
   const { pl, ss } = S.detail;
   const W = Math.floor(pl.w / ss), H = Math.floor(pl.h / ss), out = new ImageData(W, H), d = out.data;
-  const inks = pl.names.map((n, k) => ({ k, on: S.enabled.has(n), c: inkRGB(n).map((v) => 1 - v / 255) })).filter((x) => x.on);
+  const inks = pl.names.map((n, k) => ({ k, s: inkStrength(n), c: inkRGB(n).map((v) => (1 - v / 255) * inkStrength(n)) })).filter((x) => x.s > 0);
   const norm = 1 / (255 * ss * ss);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     let r = 0, g = 0, b = 0;

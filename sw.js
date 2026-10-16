@@ -4,12 +4,13 @@
 // - Engines (large WebAssembly files): cache first; they only change with a
 //   new VERSION, which re-downloads everything.
 // - Installs bypass the browser's HTTP cache so a new version never stores stale files.
-const VERSION = "prepress-v6";
+const VERSION = "prepress-v7";
 const SHELL = [
   "./", "index.html", "app.js", "pdfcore.js", "tiff.js", "content.js", "barcode.js", "preflight.js",
-  "engine-worker.js", "seps-worker.js", "trap.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png",
+  "engine-worker.js", "seps-worker.js", "trap.js", "ocr.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png",
 ];
-const ENGINES = ["mupdf.js", "mupdf-wasm.js", "mupdf-wasm.wasm", "gs.mjs", "gs.js", "browser.js", "gs.wasm", "bwip-js.mjs", "bwipp.mjs"];
+const ENGINES = ["mupdf.js", "mupdf-wasm.js", "mupdf-wasm.wasm", "gs.mjs", "gs.js", "browser.js", "gs.wasm", "bwip-js.mjs", "bwipp.mjs",
+  "tesseract.esm.min.js", "tesseract-worker.min.js", "tesseract-core-lstm.wasm.js", "tesseract-core-simd-lstm.wasm.js", "eng.traineddata.gz"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(VERSION)
@@ -33,7 +34,8 @@ self.addEventListener("fetch", (e) => {
   }
   e.respondWith((async () => {
     try {
-      const fresh = await fetch(new Request(req.url, { cache: "no-cache", credentials: "same-origin" }));
+      // full fetch every launch (no "has it changed?" shortcut), so an upload is always picked up
+      const fresh = await fetch(new Request(req.url, { cache: "no-store", credentials: "same-origin" }));
       if (fresh.ok) { const c = await caches.open(VERSION); c.put(req.url, fresh.clone()); }
       return fresh;
     } catch {

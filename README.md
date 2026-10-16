@@ -23,7 +23,7 @@ The website only delivers the app's code. Files you open are processed on the iP
 - **Undo**: steps back through your edits since the last save.
 
 ### Inspector tabs
-- **Inks**: switch plates on and off. **Measure coverage** gives the ink % and solid-equivalent cm² per plate inside the trim.
+- **Inks**: choose how each ink shows in the separations: **Show**, **Light** (30%) or **Hide**. Varnishes and technical inks (Clear, Varnish, Lack, Gloss, Matt, UV, Grid, Dieline, Cut, Crease and similar) start hidden, because they don't print as colour and would otherwise wash over the preview. **Measure coverage** gives the ink % and solid-equivalent cm² per plate inside the trim.
 - **Layers** (also the **Layers** button on the toolbar): the file's PDF layers, the same ones ArtPro+ and Acrobat show.
   - 👁 shows or hides a layer on screen and in the separations. This is a view setting only and is never saved.
   - 🔒 locks a layer so its objects can't be selected or edited.
@@ -34,6 +34,12 @@ The website only delivers the app's code. Files you open are processed on the iP
   - **Group, ungroup, lock, delete.** Locked objects can't be selected; use **Unlock all** to release them.
   - **Move to layer**: choose a layer, or "(no layer)".
   - **Ink**: change paths and text to a process ink, an existing spot or a new spot, at any tint.
+  - **Outlines → live text**: select outlined (converted) text by dragging across it, then tap **Outlines → live text**. Only the shapes in the selection are used.
+    - The letters are read on the iPad with OCR (Tesseract, English). Upright, sideways and upside-down text all work.
+    - In the review window, correct any line and its size, pick the closest font (the original font can't be recognised), and set the ink, which is filled in from the outlines' own colour.
+    - Each line becomes live text at the original position and angle, stretched or squeezed to the original line width, and the lines are grouped.
+    - The original outlines move to a hidden, locked layer, **Original outlines**, so nothing is lost. Undo reverses everything in one step.
+    - Plain type converts well. Script, heavily styled or distorted lettering (such as a brand logo) usually can't be read; keep those as outlines.
   - **Text**: select a text object to edit it. Text added in this app keeps all its settings. For text from the original file, the current wording is filled in, and updating it replaces the text in the same position and angle using the font you pick (the file's own fonts are usually subsets, so they can't take new letters).
   - **Barcodes**: select a barcode to change its data, magnification, bar height, BWR, ink or tint. Its lower-left corner stays put.
   - **Page boxes**, plus a one-tap bleed setting.
@@ -52,7 +58,7 @@ The website only delivers the app's code. Files you open are processed on the iP
   - It works from true separations, rendered in tiles at a resolution where the trap width is a whole number of pixels (0.1 mm becomes 3 px at 762 dpi). Trap edges are accurate to one pixel at that resolution.
 - **Screens**: ruling (lpi), angle and dot shape (Round, Ellipse, EllipseC, Square, Diamond, Line, Cross) for every ink, with "Others" as the default.
   - **Apply to document** stores them as standard PDF screening.
-  - **Dot preview**: tap the button, then tap the page where you want to look. A window shows the real halftone dots for that 6 × 6 mm area at 2400 dpi. Solids have no dots, so tap a tint or vignette.
+  - **Dot preview**: choose the area size (25, 50, **100** or 150 mm square), tap the button, then tap the page. A window shows the real halftone dots for that area: 100 mm renders at about 980 dpi, and smaller areas at higher resolution. Pinch or scroll to zoom and drag to move; **1:1** shows one dot pixel per screen pixel. Solids have no dots, so look at tints and vignettes.
   - Many RIPs and platesetters apply their own screening and ignore the screening in the PDF, so confirm with your repro house which settings win.
 - **Preflight**: checks for missing fonts, low-resolution and RGB images, RGB colour, hairlines and zero-width lines, small text, bleed, trim box, PDF/X marking and output intent, and total ink coverage. The limits are adjustable. Tap a result to jump to it on the page. Content checks include hidden layers.
 - **Barcode**: EAN-13, UPC-A, EAN-8, GS1-128, Code 128, ITF-14, GS1 DataMatrix, DataMatrix, GS1 QR and QR.

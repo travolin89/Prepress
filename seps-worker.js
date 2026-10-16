@@ -22,7 +22,7 @@ function getGS() {
   return gsReady;
 }
 
-async function render(bytes, tag, page, dpi, device = "tiffsep") {
+async function render(bytes, tag, page, dpi, device = "tiffsep", packed = false) {
   const gs = await getGS();
   if (bytes) { gs.FS.writeFile("/in.pdf", new Uint8Array(bytes)); loaded = tag; }
   try { gs.FS.mkdir("/out"); } catch {}
@@ -39,8 +39,8 @@ async function render(bytes, tag, page, dpi, device = "tiffsep") {
   for (const f of gs.FS.readdir("/out")) {
     const m = f.match(/^p\((.+)\)\.tif$/);
     if (!m) continue;
-    const pl = plateFromTiff(gs.FS.readFile("/out/" + f));
-    plates[m[1]] = pl.data;
+    const pl = plateFromTiff(gs.FS.readFile("/out/" + f), { packed });
+    plates[m[1]] = packed ? pl : pl.data;
     w = pl.w; h = pl.h;
     gs.FS.unlink("/out/" + f);
   }
@@ -93,15 +93,21 @@ const jobs = {
     return { result: groups, transfer: [] };
   },
 
-  // dot-level (halftoned) plates; renders: [{ bytes, inks: [names wanted] }]
-  async dots({ renders, dpi }) {
-    const out = { names: [], w: 0, h: 0, data: [] };
-    for (const job of renders) {
-      const r = await render(job.bytes, null, 0, dpi, "tiffsep1");
+  // dot-level (halftoned) plates, kept at 1 bit per pixel; renders: [{ bytes, inks: [names wanted] }]
+  async dots({ renders, dpi }, progress) {
+    const out = { names: [], w: 0, h: 0, stride: 0, bits: [], inkIsOne: [] };
+    for (let j = 0; j < renders.length; j++) {
+      progress(`Rendering dots ${j + 1} of ${renders.length}`);
+      const job = renders[j];
+      const r = await render(job.bytes, null, 0, dpi, "tiffsep1", true);
       out.w = r.w; out.h = r.h;
-      r.names.forEach((n, i) => { if (job.inks.includes(n) && !out.names.includes(n)) { out.names.push(n); out.data.push(r.data[i]); } });
+      r.names.forEach((n, i) => {
+        if (!job.inks.includes(n) || out.names.includes(n)) return;
+        const pl = r.data[i];
+        out.names.push(n); out.bits.push(pl.bits); out.inkIsOne.push(pl.inkIsOne); out.stride = pl.stride;
+      });
     }
-    return { result: out, transfer: out.data.map((d) => d.buffer) };
+    return { result: out, transfer: out.bits.map((b) => b.buffer) };
   },
 };
 

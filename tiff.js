@@ -1,6 +1,6 @@
 // Reads the uncompressed 8-bit greyscale TIFF plates Ghostscript writes
 // (tiffsep with -sCompression=none) and returns ink coverage 0..255.
-export function plateFromTiff(buf) {
+export function plateFromTiff(buf, opts = {}) {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const le = dv.getUint16(0) === 0x4949;
   const u16 = (o) => dv.getUint16(o, le), u32 = (o) => dv.getUint32(o, le);
@@ -27,6 +27,7 @@ export function plateFromTiff(buf) {
     p += len;
   });
   let out = raw;
+  if (bps === 1 && opts.packed) return { w, h, stride, bits: raw, inkIsOne: !blackIsZero }; // 1 bit per pixel, kept compact
   if (bps === 1) { // halftone dots: expand to 0/255
     out = new Uint8Array(w * h);
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) out[y * w + x] = (raw[y * stride + (x >> 3)] >> (7 - (x & 7))) & 1 ? 255 : 0;

@@ -235,6 +235,7 @@ function applyOp(d, op) {
   if (op.kind === "lockLayer") return lockLayer(d, op.id, op.locked);
   if (op.kind === "addText" || op.kind === "replaceText") return textOp(d, op);
   if (op.kind === "traps") return writeTraps(d, op);
+  if (op.kind === "outlinesToText") return outlinesToText(d, op);
   if (op.kind === "removeTraps") return removeTraps(d, op.i);
   if (op.kind === "relink") return relinkImage(d, op);
   if (op.kind === "removeImage") return removeImage(d, op.objnum);
@@ -494,12 +495,14 @@ function textBlock(d, pg, spec, M) {
     if (missing.size) throw new Error(`The font ${font.getName()} has no glyphs for: ${[...missing].join(" ")}`);
     return out + "ET";
   }
+  const hs = spec.hscale && spec.hscale !== 100 ? spec.hscale : 100; // horizontal scale (matching outlined widths)
+  if (hs !== 100) out = out.replace("0 Tc 0 Tw 100 Tz", `0 Tc 0 Tw ${+hs.toFixed(2)} Tz`);
   spec.text.split(/\r?\n/).forEach((line, n) => {
     let w = 0, hex = "";
     for (const ch of line) {
       const gid = font.encodeCharacter(ch.codePointAt(0));
       if (!gid && ch.trim()) missing.add(ch);
-      w += font.advanceGlyph(gid) * spec.size;
+      w += (font.advanceGlyph(gid) * spec.size * hs) / 100;
       hex += gid.toString(16).padStart(4, "0");
     }
     const ox = spec.align === "c" ? -w / 2 : spec.align === "r" ? -w : 0;
@@ -511,6 +514,7 @@ function textBlock(d, pg, spec, M) {
 function textProps(spec, M) {
   const p = { T: utf16hex(spec.text), F: spec.font, S: spec.size, Ld: spec.lead, A: spec.align, K: spec.ink.name, KC: spec.ink.cmyk ? spec.ink.cmyk.join(" ") : null, Tn: spec.tint, M: fmt(M) };
   if (spec.path) p.Path = JSON.stringify(spec.path); // path settings, kept for editing
+  if (spec.hscale && spec.hscale !== 100) p.HS = +spec.hscale.toFixed(2);
   return p;
 }
 // "along the selected path": capture that path's geometry into the edit itself
@@ -546,7 +550,10 @@ function textOp(d, op) {
 // collect every character our text uses, subset in a throwaway document,
 // and copy the slim font program back into our font object.
 function subsetOurFonts(d) {
-  const ids = new Set(log.filter((op) => op.spec && op.spec.font).map((op) => op.spec.font));
+  const ids = new Set([
+    ...log.filter((op) => op.spec && op.spec.font).map((op) => op.spec.font),
+    ...log.filter((op) => op.kind === "outlinesToText").map((op) => op.font),
+  ]);
   for (const id of ids) {
     let font;
     try { font = makeFont(id); } catch { continue; } // full font not available: keep as is
@@ -578,6 +585,43 @@ function subsetOurFonts(d) {
     }
     tmp.destroy();
   }
+}
+
+// ------------------------------------------------------------------ outlined text -> live text
+// lines: [{ text, M:[a b c d e f] (unit-scale baseline matrix, page space), size, width (pt) }]
+function outlinesToText(d, op) {
+  const pg = pageObj(d, op.i);
+  let cur = parsePage(pg, readContent(pg));
+  const ks = [...op.objs].sort((a, b) => b - a);
+  if (op.keep) {
+    // keep the original outlines on a hidden, locked layer as a safety net
+    let layer = listLayers(d).find((l) => l.name === "Original outlines");
+    if (!layer) { newLayer(d, "Original outlines"); layer = listLayers(d).find((l) => l.name === "Original outlines"); }
+    const D = ocProps(d).get("D"), offSet = refSet(D.get("OFF"));
+    const on = d.newArray(), off = d.newArray();
+    for (const l of listLayers(d)) (l.id === layer.id || offSet.has(l.id) ? off : on).push(ocgById(d, l.id));
+    D.put("ON", on); D.put("OFF", off);
+    lockLayer(d, layer.id, true);
+    const res = resForOcg(d, pg, layer.id);
+    for (const k of ks) cur = parsePage(pg, editContent(cur.s, cur.ops, cur.objs, { action: "layer", obj: k, res }));
+  } else {
+    for (const k of ks) cur = parsePage(pg, editContent(cur.s, cur.ops, cur.objs, { action: "delete", obj: k }));
+  }
+  writeContent(d, pg, cur.s);
+  const font = makeFont(op.font);
+  const lines = op.lines.filter((L) => L.text.trim());
+  const G = lines.length > 1 ? Math.max(0, ...cur.objs.map((o) => (o.wrap && o.wrap.props.G) || 0)) + 1 : null;
+  let blocks = "";
+  for (const L of lines) {
+    let natural = 0;
+    for (const ch of L.text) natural += font.advanceGlyph(font.encodeCharacter(ch.codePointAt(0))) * L.size;
+    const hscale = op.matchWidth && natural > 0 ? Math.min(200, Math.max(50, (L.width / natural) * 100)) : 100;
+    const spec = { text: L.text, font: op.font, size: L.size, lead: L.size * 1.2, align: "l", ink: op.ink, tint: op.tint, hscale };
+    blocks += `/PPObj ${propsToPdf({ ...textProps(spec, L.M), G })} BDC\nq\n${textBlock(d, pg, spec, L.M)}\nQ\nEMC\n`;
+  }
+  if (!blocks) return;
+  const after = parsePage(pg, readContent(pg));
+  writeContent(d, pg, appendBlock(after.s, after.ops, blocks.trim()));
 }
 
 // ------------------------------------------------------------------ trapping
@@ -869,7 +913,7 @@ function objList(i) {
     const p = o.wrap ? o.wrap.props : {};
     let path = null;
     try { path = p.Path ? JSON.parse(p.Path) : null; } catch {}
-    const text = o.type === "text" ? (p.T ? { ours: true, text: fromUtf16(p.T), font: p.F, size: p.S, lead: p.Ld, align: p.A, ink: p.K, cmyk: p.KC, tint: p.Tn, path }
+    const text = o.type === "text" ? (p.T ? { ours: true, text: fromUtf16(p.T), font: p.F, size: p.S, lead: p.Ld, align: p.A, ink: p.K, cmyk: p.KC, tint: p.Tn, path, hscale: p.HS || 100 }
       : { ours: false, size: +o.size.toFixed(2), fontRes: o.fontRes }) : null;
     const desc = text && text.ours ? `Text · ${String(text.font).slice(2)} ${text.size} pt · ${text.ink} ${text.tint}%` : o.desc;
     return {
@@ -952,6 +996,39 @@ const api = {
     return { result: out, transfer: [out.buffer] };
   },
   textOf({ i, k }) { return textOf(i, k); },
+  outlinesToText(op) {
+    makeFont(op.font); // validate before logging
+    doEdit({ kind: "outlinesToText", ...op });
+    return { objects: objList(op.i), edits: log.length, layers: layerInfo(), inks: docInks() };
+  },
+  // outlined text: draw only the selected shapes, black on white, for OCR
+  outlineImage({ i, objs, dpi }) {
+    const { ops, objs: all } = pageObjects(doc, i);
+    const sel = objs.map((k) => all[k]).filter((o) => o && o.type === "path");
+    if (!sel.length) throw new Error("Select the outlined text (its shapes) first.");
+    const PATHOPS = new Set(["m", "l", "c", "v", "y", "h", "re", "f", "F", "f*", "B", "B*", "b", "b*", "S", "s", "n"]);
+    let body = "0 g 0 G\n";
+    let box = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const o of sel) {
+      const parts = [];
+      for (let k = o.a; k <= o.b; k++) if (PATHOPS.has(ops[k].op)) parts.push(ops[k].args.map((a) => (a.num !== undefined ? +a.num.toFixed(4) : "")).join(" ") + " " + ops[k].op);
+      body += `q ${o.ctm.map((v) => +v.toFixed(6)).join(" ")} cm\n${parts.join("\n")}\nQ\n`;
+      box = [Math.min(box[0], o.bbox[0]), Math.min(box[1], o.bbox[1]), Math.max(box[2], o.bbox[2]), Math.max(box[3], o.bbox[3])];
+    }
+    const m = 3; // pt of white margin helps recognition
+    const rect = [box[0] - m, box[1] - m, box[2] + m, box[3] + m];
+    let scale = (dpi || 400) / 72;
+    const px = (rect[2] - rect[0]) * (rect[3] - rect[1]) * scale * scale;
+    if (px > 30e6) scale *= Math.sqrt(30e6 / px);
+    const tmp = new mupdf.PDFDocument();
+    tmp.insertPage(-1, tmp.addPage(rect, 0, tmp.newDictionary(), body));
+    const pix = tmp.loadPage(0).toPixmap(mupdf.Matrix.scale(scale, scale), mupdf.ColorSpace.DeviceGray, false);
+    const w = pix.getWidth(), h = pix.getHeight(), st = pix.getStride(), src = pix.getPixels();
+    const grey = new Uint8ClampedArray(w * h);
+    for (let y = 0; y < h; y++) grey.set(src.subarray(y * st, y * st + w), y * w);
+    pix.destroy(); tmp.destroy();
+    return { result: { w, h, grey, rect, scale }, transfer: [grey.buffer] };
+  },
   // trapping
   trapTiles({ i, rects }) {
     const { d, first } = tileDoc(i, rects, { withoutTraps: true });
@@ -996,8 +1073,13 @@ const api = {
       d.destroy();
       return out;
     };
-    docs.push({ bytes: make(null), inks: ["Cyan", "Magenta", "Yellow", "Black"] });
-    for (const s of spots) docs.push({ bytes: make(settings[s] ? s : "Default"), inks: [s] });
+    // one render per distinct spot screen; spots on the default screen come from the main render
+    const key = (s) => JSON.stringify(settings[s] || settings.Default);
+    const def = JSON.stringify(settings.Default);
+    const groups = new Map();
+    for (const s of spots) { const k = key(s); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s); }
+    docs.push({ bytes: make(null), inks: ["Cyan", "Magenta", "Yellow", "Black", ...(groups.get(def) || [])] });
+    for (const [k, names] of groups) if (k !== def) docs.push({ bytes: make(names[0]), inks: names });
     return { result: docs, transfer: docs.map((x) => x.bytes.buffer) };
   },
   layers() { return layerInfo(); },

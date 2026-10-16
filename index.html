@@ -161,7 +161,7 @@
   <div id="stage">
     <div id="sheet"><canvas id="page" width="1" height="1"></canvas><canvas id="detail" width="1" height="1"></canvas><svg id="boxes"></svg></div>
     <div id="cross"></div>
-    <div id="empty"><div><h1>Prepress <span style="color:var(--dim);font-weight:400">v6</span></h1>Open a PDF/X file to start.<br>Everything runs on this iPad; files never leave it.</div></div>
+    <div id="empty"><div><h1>Prepress <span style="color:var(--dim);font-weight:400">v7</span></h1>Open a PDF/X file to start.<br>Everything runs on this iPad; files never leave it.</div></div>
   </div>
   <aside id="aside">
     <nav class="tabs"><button data-tab="inks" class="on">Inks</button><button data-tab="layers">Layers</button><button data-tab="edit">Edit</button><button data-tab="text">Text</button><button data-tab="links">Links</button><button data-tab="trap">Trap</button><button data-tab="screens">Screens</button><button data-tab="pre">Preflight</button><button data-tab="bc">Barcode</button><button data-tab="info">Info</button></nav>
@@ -237,7 +237,10 @@
     </section>
     <section id="tab-screens" hidden>
       <div id="scTable"><div class="hint">No file open.</div></div>
-      <div class="row"><button id="scApply" class="on" disabled>Apply to document</button><button id="scPreview" disabled>Dot preview (tap the page)</button></div>
+      <div class="row"><button id="scApply" class="on" disabled>Apply to document</button></div>
+      <div class="row"><span>Preview area</span><select id="scSize" style="min-height:38px;font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:0 8px">
+        <option value="25">25 × 25 mm</option><option value="50">50 × 50 mm</option><option value="100" selected>100 × 100 mm</option><option value="150">150 × 150 mm</option></select>
+        <button id="scPreview" disabled>Dot preview (tap the page)</button></div>
       <canvas id="scCanvas" width="1" height="1" style="width:100%;border-radius:10px;display:none;margin-top:8px;image-rendering:pixelated"></canvas>
       <div class="hint" id="scInfo">Saved as standard PDF screening (ruling, angle, dot shape per ink). Your RIP or platesetter may use its own screening instead; check with your repro house. The preview shows a 6 × 6 mm area at the centre of the view at 2400 dpi.</div>
     </section>
